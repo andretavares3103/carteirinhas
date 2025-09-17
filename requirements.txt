@@ -1,6 +1,5 @@
-streamlit
-pandas
-numpy
-openpyxl
-geopy
-xlsxwriter
+streamlit>=1.38.0
+pandas>=2.2.0
+numpy>=1.26.0
+openpyxl>=3.1.2     # leitura/escrita de Excel (.xlsx)
+xlsxwriter>=3.2.0   # exportar para Excel com formatação
