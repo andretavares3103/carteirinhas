@@ -2,11 +2,12 @@
 # -------------------------------------------------------------
 # Vavivê — Visualizador de Atendimentos + Carteirinhas (Streamlit)
 # -------------------------------------------------------------
-# Upload independente de:
-# - Atendimentos (ex.: 202509.xlsx)  -> ler aba "Clientes" (ou primeira com dados)
-# - Carteirinhas (fotos/links)
-# Exibe: Data, Cliente, Serviço, Hora de entrada, Duração (h),
-#        Profissional, Foto (URL)
+# Upload independente de 2 arquivos Excel:
+#  - Atendimentos (ex.: 202509.xlsx) -> ler aba "Clientes" (ou primeira com dados)
+#  - Carteirinhas (fotos/links)
+# Exibe: Data, Cliente, Serviço, Hora de entrada, Duração (h), Profissional, Foto (URL)
+# Merge por ID do profissional (se houver) e fallback por Nome.
+# Inclui tratamento para colunas duplicadas pós-normalização (#Num Prestador e #num+Prestador).
 # -------------------------------------------------------------
 
 import streamlit as st
@@ -22,6 +23,7 @@ st.set_page_config(page_title="Vavivê — Atendimentos + Carteirinhas", layout=
 # =========================
 
 def slugify_col(s: str) -> str:
+    """Normaliza nomes de colunas de forma estável para merges/filtros."""
     if s is None:
         return ""
     s = str(s).strip().lower()
@@ -32,24 +34,24 @@ def slugify_col(s: str) -> str:
         "ó":"o","ò":"o","ô":"o","õ":"o","ö":"o",
         "ú":"u","ù":"u","û":"u","ü":"u",
         "ç":"c","ñ":"n",
+        "#":" ", "+":" ", "/":" ", "-":" ", ".":" ", "º":" ", "°":" ",
     }
-    for k,v in trocas.items():
+    for k, v in trocas.items():
         s = s.replace(k, v)
-    # Remove símbolos que costumam atrapalhar (#, +, /, -, .) e normaliza espaços
-    for ch in ["#", "+", "/", "-", ".", "º", "°"]:
-        s = s.replace(ch, " ")
-    s = " ".join(s.split())
+    s = " ".join(s.split())              # normaliza espaços
     s = s.replace(" ", "_")
     s = "".join(ch for ch in s if ch.isalnum() or ch == "_")
     while "__" in s:
         s = s.replace("__", "_")
     return s.strip("_")
 
+
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     mapping = {c: slugify_col(c) for c in df.columns}
     df.rename(columns=mapping, inplace=True)
     return df
+
 
 def parse_datetime_col(serie):
     def parse_one(x):
@@ -58,13 +60,12 @@ def parse_datetime_col(serie):
         if isinstance(x, (pd.Timestamp, datetime)):
             return pd.to_datetime(x)
         if isinstance(x, (int, float)) and not isinstance(x, bool):
-            # Excel serial (dias desde 1899-12-30)
+            # Excel serial date/time
             try:
                 base = datetime(1899, 12, 30)
                 return base + timedelta(days=float(x))
             except Exception:
                 return pd.NaT
-        # string
         for fmt in [
             "%Y-%m-%d %H:%M:%S","%Y-%m-%d %H:%M",
             "%d/%m/%Y %H:%M:%S","%d/%m/%Y %H:%M",
@@ -81,10 +82,12 @@ def parse_datetime_col(serie):
             return pd.NaT
     return serie.apply(parse_one)
 
+
 def parse_time_hhmm(serie):
     dt = parse_datetime_col(serie)
     hhmm = dt.dt.strftime("%H:%M")
     return hhmm, dt
+
 
 def ensure_numeric_hours(serie):
     def to_hours(x):
@@ -92,12 +95,10 @@ def ensure_numeric_hours(serie):
             return np.nan
         if isinstance(x, (int, float)) and not isinstance(x, bool):
             val = float(x)
-            # Heurística: <= 12 tratamos como horas; > 12 pode ser fração de dia (Excel)
-            if val <= 12:
-                return val
-            return val * 24.0
+            # Heurística: <=12 tratamos como horas; >12 pode ser dias (Excel)
+            return val if val <= 12 else val * 24.0
         if isinstance(x, timedelta):
-            return x.total_seconds()/3600.0
+            return x.total_seconds() / 3600.0
         s = str(x).strip()
         if ":" in s:
             try:
@@ -112,22 +113,30 @@ def ensure_numeric_hours(serie):
             return np.nan
     return serie.apply(to_hours)
 
+
+def _ensure_series(df: pd.DataFrame, colname: str) -> pd.Series:
+    """Garante Series mesmo quando df[col] retorna DataFrame (colunas duplicadas)."""
+    obj = df[colname]
+    if isinstance(obj, pd.DataFrame):
+        return obj.iloc[:, 0]
+    return obj
+
 # =========================
 # Mapeamentos
 # =========================
 
 ATEND_COLS = {
-    # alvo -> candidatos normalizados (inclui variantes do seu cabeçalho)
+    # alvo -> candidatos já normalizados
     "data": ["data", "data_1", "dt", "dt_atendimento", "data_atendimento"],
     "cliente": ["cliente", "nome_cliente", "cliente_nome"],
     "servico": ["servico", "tipo_servico", "descricao_servico"],
     "hora_entrada": ["hora_entrada", "entrada", "hora_inicio", "inicio", "horario", "hora", "hora_de_entrada"],
     "duracao_horas": ["duracao", "duracao_horas", "horas", "carga_horaria", "tempo", "horas_de_servico"],
     "profissional_nome": ["nome_do_profissional", "profissional", "nome_profissional", "prof_nome", "prestador"],
-    # ID do profissional: cobre "#Num Prestador" e "#num+Prestador" após slugify -> "num_prestador", "num_prestador" etc.
+    # cobre "#Num Prestador" e "#num+Prestador" após slugify -> "num_prestador"
     "profissional_id": [
         "num_prestador", "num_prestadora", "id_profissional", "numero_do_profissional",
-        "num_profissional", "num", "num_prestador", "num_prestador"
+        "num_profissional", "num"
     ],
 }
 
@@ -137,46 +146,40 @@ CART_COLS = {
     "foto_url": ["foto_url", "url", "link", "image", "foto", "photo", "photo_url"],
 }
 
+
 def pick_col(df, candidates):
     for c in candidates:
         if c in df.columns:
             return c
     return None
 
+
 def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = normalize_columns(df_raw)
     cols = {k: pick_col(df, v) for k, v in ATEND_COLS.items()}
 
-    data_col = cols["data"]
-    cliente_col = cols["cliente"]
-    servico_col = cols["servico"]
-    entrada_col = cols["hora_entrada"]
-    dur_col = cols["duracao_horas"]
-    prof_nome_col = cols["profissional_nome"]
-    prof_id_col = cols["profissional_id"]
-
     out = pd.DataFrame()
 
-    if data_col is not None:
-        out["data"] = parse_datetime_col(df[data_col]).dt.date
+    if cols["data"] is not None:
+        out["data"] = parse_datetime_col(_ensure_series(df, cols["data"])).dt.date
     else:
         out["data"] = pd.NaT
 
-    out["cliente"] = df[cliente_col].astype(str) if cliente_col else ""
-    out["servico"] = df[servico_col].astype(str) if servico_col else ""
+    out["cliente"] = _ensure_series(df, cols["cliente"]).astype(str) if cols["cliente"] else ""
+    out["servico"] = _ensure_series(df, cols["servico"]).astype(str) if cols["servico"] else ""
 
-    if entrada_col:
-        hhmm, dt_full = parse_time_hhmm(df[entrada_col])
+    if cols["hora_entrada"] is not None:
+        hhmm, dt_full = parse_time_hhmm(_ensure_series(df, cols["hora_entrada"]))
         out["hora_entrada"] = hhmm
         out["_hora_entrada_dt"] = dt_full
     else:
         out["hora_entrada"] = ""
         out["_hora_entrada_dt"] = pd.NaT
 
-    if dur_col:
-        out["duracao_horas"] = ensure_numeric_hours(df[dur_col])
+    if cols["duracao_horas"] is not None:
+        out["duracao_horas"] = ensure_numeric_hours(_ensure_series(df, cols["duracao_horas"]))
     else:
-        # tenta calcular por hora fim - inicio se alguma coluna fim existir
+        # tentativa via hora fim - hora início (se existir)
         possiveis_fim = ["hora_fim", "saida", "hora_termino", "fim", "horario_fim"]
         fim_col = None
         for c in possiveis_fim:
@@ -184,42 +187,39 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
             if c_norm in df.columns:
                 fim_col = c_norm
                 break
-        if fim_col and entrada_col:
-            _, dt_fim = parse_time_hhmm(df[fim_col])
+        if fim_col and cols["hora_entrada"] is not None:
+            _, dt_fim = parse_time_hhmm(_ensure_series(df, fim_col))
             dur = (dt_fim - out["_hora_entrada_dt"]).dt.total_seconds() / 3600.0
             out["duracao_horas"] = dur
         else:
             out["duracao_horas"] = np.nan
 
-    out["profissional_nome"] = df[prof_nome_col].astype(str) if prof_nome_col else ""
-    out["profissional_id"] = df[prof_id_col].astype(str) if prof_id_col else ""
+    out["profissional_nome"] = _ensure_series(df, cols["profissional_nome"]).astype(str) if cols["profissional_nome"] else ""
+    out["profissional_id"] = _ensure_series(df, cols["profissional_id"]).astype(str) if cols["profissional_id"] else ""
 
-    # chave auxiliar para merge por nome
     out["__nome_norm"] = (
-        out["profissional_nome"]
-        .fillna("").str.strip().str.lower()
+        out["profissional_nome"].fillna("").str.strip().str.lower()
         .str.normalize('NFKD').str.encode('ascii', 'ignore').str.decode('utf-8')
     )
 
     out["duracao_horas"] = out["duracao_horas"].round(2)
     return out
 
+
 def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = normalize_columns(df_raw)
     cols = {k: pick_col(df, v) for k, v in CART_COLS.items()}
 
     out = pd.DataFrame()
-    out["profissional_id"] = df[cols["profissional_id"]].astype(str) if cols["profissional_id"] else ""
-    out["profissional_nome"] = df[cols["profissional_nome"]].astype(str) if cols["profissional_nome"] else ""
-    out["foto_url"] = df[cols["foto_url"]].astype(str) if cols["foto_url"] else ""
+    out["profissional_id"] = _ensure_series(df, cols["profissional_id"]).astype(str) if cols["profissional_id"] else ""
+    out["profissional_nome"] = _ensure_series(df, cols["profissional_nome"]).astype(str) if cols["profissional_nome"] else ""
+    out["foto_url"] = _ensure_series(df, cols["foto_url"]).astype(str) if cols["foto_url"] else ""
 
     out["__nome_norm"] = (
-        out["profissional_nome"]
-        .fillna("").str.strip().str.lower()
+        out["profissional_nome"].fillna("").str.strip().str.lower()
         .str.normalize('NFKD').str.encode('ascii', 'ignore').str.decode('utf-8')
     )
 
-    # prioriza quem tem foto
     out = (
         out.sort_values(by=["foto_url"], ascending=[False])
            .drop_duplicates(subset=["profissional_id", "__nome_norm"], keep="first")
@@ -231,7 +231,7 @@ def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
 # =========================
 
 st.title("📸 Vavivê — Atendimentos + Carteirinhas")
-st.caption("Envie os dois arquivos (nomes livres). O app detecta a aba 'Clientes' no arquivo de atendimentos.")
+st.caption("O app tenta a aba 'Clientes' do arquivo de Atendimentos. Se não houver, pega a primeira com dados.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -239,26 +239,14 @@ with col1:
 with col2:
     f_cart = st.file_uploader("Arquivo de Carteirinhas (Excel) — fotos/links", type=["xlsx", "xls"], key="up_cart")
 
-# Fallbacks locais (opcional)
-if not f_atend:
-    try:
-        f_atend = open("202509.xlsx", "rb")
-    except Exception:
-        pass
-if not f_cart:
-    try:
-        f_cart = open("Carteirinhas.xlsx", "rb")
-    except Exception:
-        pass
-
 if not f_atend or not f_cart:
     st.info("⬆️ Carregue os dois arquivos para continuar.")
     st.stop()
 
-# Leitura inteligente das abas
+# Leitura inteligente de abas
 try:
     xls_a = pd.ExcelFile(f_atend)
-    # usa "Clientes" se existir; senão, primeira aba com dados
+    # Usa "Clientes" se existir; senão, primeira não vazia
     default_sheet = "Clientes" if "Clientes" in xls_a.sheet_names else None
     if default_sheet is None:
         chosen = None
@@ -269,8 +257,7 @@ try:
                 break
         default_sheet = chosen or xls_a.sheet_names[0]
     st.caption(":file_folder: Aba detectada no arquivo de Atendimentos")
-    sheet_sel = st.selectbox("Aba dos Atendimentos", options=xls_a.sheet_names,
-                             index=xls_a.sheet_names.index(default_sheet))
+    sheet_sel = st.selectbox("Aba dos Atendimentos", options=xls_a.sheet_names, index=xls_a.sheet_names.index(default_sheet))
     df_atend_raw = pd.read_excel(xls_a, sheet_name=sheet_sel)
 except Exception as e:
     st.error(f"Erro ao ler Atendimentos: {e}")
@@ -286,8 +273,7 @@ try:
             break
     chosen_c = chosen_c or xls_c.sheet_names[0]
     st.caption(":file_folder: Aba detectada no arquivo de Carteirinhas")
-    sheet_cart = st.selectbox("Aba das Carteirinhas", options=xls_c.sheet_names,
-                              index=xls_c.sheet_names.index(chosen_c))
+    sheet_cart = st.selectbox("Aba das Carteirinhas", options=xls_c.sheet_names, index=xls_c.sheet_names.index(chosen_c))
     df_cart_raw = pd.read_excel(xls_c, sheet_name=sheet_cart)
 except Exception as e:
     st.error(f"Erro ao ler Carteirinhas: {e}")
@@ -297,7 +283,7 @@ except Exception as e:
 at = coerce_atendimentos(df_atend_raw)
 ct = coerce_carteirinhas(df_cart_raw)
 
-# Merge por ID se existir; senão por nome
+# Merge por ID se possível, senão por nome
 merged = at.copy()
 has_id_at = merged["profissional_id"].astype(str).str.len() > 0
 has_id_ct = ct["profissional_id"].astype(str).str.len() > 0
@@ -316,9 +302,7 @@ for c in final_cols:
     if c not in merged.columns:
         merged[c] = np.nan if c.endswith("_horas") else ""
 
-merged_view = merged[final_cols].sort_values(
-    by=["data", "cliente", "profissional_nome"], ascending=[True, True, True]
-)
+merged_view = merged[final_cols].sort_values(by=["data", "cliente", "profissional_nome"], ascending=[True, True, True])
 
 # Filtros
 with st.expander("🔎 Filtros"):
@@ -375,7 +359,6 @@ with pd.ExcelWriter(out, engine="xlsxwriter") as wr:
     merged_view.to_excel(wr, index=False, sheet_name="Atendimentos")
     ws = wr.sheets["Atendimentos"]
     for i, col in enumerate(merged_view.columns):
-        # largura simples com limite
         try:
             maxlen = int(min(60, max(10, merged_view[col].astype(str).str.len().max())))
         except ValueError:
@@ -389,4 +372,4 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
-st.caption("Dica: o app tenta a aba 'Clientes' primeiro; se não houver, escolhe a primeira com dados. Você pode trocar a aba pelos seletores acima.")
+st.caption("Dica: se existir a aba 'Clientes', ela é priorizada. Se não, a primeira aba com dados é usada (você pode trocar no seletor).")
