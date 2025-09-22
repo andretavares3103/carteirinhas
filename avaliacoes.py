@@ -5,7 +5,7 @@
 # Upload independente de 2 arquivos Excel:
 #  - Atendimentos (ex.: 202509.xlsx) -> ler aba "Clientes" (ou primeira com dados)
 #  - Carteirinhas (fotos/links)
-# Exibe: Data, Cliente, Serviço, Hora de entrada, Duração (h), Profissional, Foto (URL)
+# Exibe: Data, Cliente, Serviço, Hora de entrada, Duração (h), Profissional, Status, Foto (URL)
 # Merge por ID do profissional (se houver) e fallback por Nome.
 # Inclui tratamento para colunas duplicadas pós-normalização (#Num Prestador e #num+Prestador).
 # -------------------------------------------------------------
@@ -142,6 +142,11 @@ ATEND_COLS = {
         "num_prestador", "num_prestadora", "id_profissional", "numero_do_profissional",
         "num_profissional", "num"
     ],
+    # NOVO: status do serviço/atendimento (várias variações comuns)
+    "status": [
+        "status", "situacao", "status_servico", "situacao_servico",
+        "status_atendimento", "situacao_atendimento", "andamento", "etapa"
+    ],
 }
 
 CART_COLS = {
@@ -200,6 +205,9 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     out["profissional_nome"] = _ensure_series(df, cols["profissional_nome"]).astype(str) if cols["profissional_nome"] else ""
     out["profissional_id"] = _ensure_series(df, cols["profissional_id"]).astype(str) if cols["profissional_id"] else ""
+
+    # NOVO: status do serviço
+    out["status"] = _ensure_series(df, cols["status"]).astype(str) if cols["status"] else ""
 
     out["__nome_norm"] = (
         out["profissional_nome"].fillna("").str.strip().str.lower()
@@ -297,10 +305,10 @@ if has_id_at.any() and has_id_ct.any():
 else:
     merged = merged.merge(ct[["__nome_norm", "foto_url"]], on="__nome_norm", how="left")
 
-# Colunas finais
+# Colunas finais (inclui status)
 final_cols = [
     "data", "cliente", "servico", "hora_entrada", "duracao_horas",
-    "profissional_nome", "profissional_id", "foto_url"
+    "profissional_nome", "profissional_id", "status", "foto_url"
 ]
 for c in final_cols:
     if c not in merged.columns:
@@ -311,6 +319,8 @@ merged_view = merged[final_cols].sort_values(by=["data", "cliente", "profissiona
 # ========= Ajuste CRÍTICO: evitar AttributeError em strings/NaN =========
 # Garante que 'foto_url' não seja NaN para evitar .strip() em float
 merged_view["foto_url"] = merged_view["foto_url"].fillna("")
+# Evita "nan" aparecendo em status
+merged_view["status"] = merged_view["status"].fillna("")
 
 # Filtros
 with st.expander("🔎 Filtros"):
@@ -321,6 +331,15 @@ with st.expander("🔎 Filtros"):
     txt_cliente = c2.text_input("Cliente contém", "")
     txt_prof = c3.text_input("Profissional contém", "")
 
+    # NOVO: filtro de Status (multiseleção)
+    status_unicos = sorted([s for s in merged_view["status"].dropna().unique() if str(s).strip() != ""])
+    status_sel = st.multiselect(
+        "Status do serviço",
+        options=status_unicos,
+        default=status_unicos,
+        help="Selecione um ou mais status. Se vazio, todos os status serão considerados."
+    )
+
     mask = pd.Series([True]*len(merged_view))
     if data_sel != "(todas)":
         mask &= (merged_view["data"] == data_sel)
@@ -328,6 +347,9 @@ with st.expander("🔎 Filtros"):
         mask &= merged_view["cliente"].str.contains(txt_cliente.strip(), case=False, na=False)
     if txt_prof.strip():
         mask &= merged_view["profissional_nome"].str.contains(txt_prof.strip(), case=False, na=False)
+    if status_sel:  # se nada selecionado, não filtra por status
+        mask &= merged_view["status"].isin(status_sel)
+
     merged_view = merged_view[mask]
 
 st.subheader("📄 Tabela de Atendimentos")
@@ -346,7 +368,11 @@ else:
             with col:
                 st.markdown(f"**{_s(row.get('cliente'))}**")
                 st.caption(f"{_s(row.get('servico'))}")
-                st.write(f"📅 {_s(row.get('data'))}  ⏱️ {_s(row.get('hora_entrada'))}  •  {_s(row.get('duracao_horas'))}h")
+                status_txt = _s(row.get("status"))
+                st.write(
+                    f"📅 {_s(row.get('data'))}  ⏱️ {_s(row.get('hora_entrada'))}  •  {_s(row.get('duracao_horas'))}h"
+                    + (f"  •  🔖 {status_txt}" if status_txt else "")
+                )
                 st.write(f"👤 {_s(row.get('profissional_nome'))}  |  ID: {_s(row.get('profissional_id'))}")
 
                 # Tratamento seguro da URL (evita .strip() em NaN/float)
