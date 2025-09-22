@@ -373,7 +373,7 @@ else:
                 """ if obs else ""
 
                 html = f"""
-                <div style="display:flex; gap:16px; align-items:flex-start;
+                <div style="display:flex; gap:20px; align-items:flex-start;
                             border:1px solid #e5e7eb; padding:12px 14px; border-radius:14px;
                             background:#ffffff; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
                   <div style="flex:1; min-width:0;">
@@ -434,4 +434,5 @@ st.download_button(
 )
 
 st.caption("Dica: ajuste a largura da foto mudando o 'width' do container da imagem (atualmente 130px).")
+
 
