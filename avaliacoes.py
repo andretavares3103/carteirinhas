@@ -6,8 +6,7 @@
 #  - Atendimentos (ex.: 202509.xlsx) -> ler aba "Clientes" (ou primeira com dados)
 #  - Carteirinhas (fotos/links)
 # Exibe: Data, Cliente, Serviço, Hora de entrada, Duração (h), Profissional, Status, Foto (URL)
-# Merge por ID do profissional (se houver) e fallback por Nome.
-# Inclui tratamento para colunas duplicadas pós-normalização (#Num Prestador e #num+Prestador).
+# Cruzamento PRIORITÁRIO por ID/Matrícula (#Num Prestador) e fallback por nome.
 # -------------------------------------------------------------
 
 import streamlit as st
@@ -15,6 +14,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import io
+import re
 
 st.set_page_config(page_title="Vavivê — Atendimentos + Carteirinhas", layout="wide")
 
@@ -23,7 +23,6 @@ st.set_page_config(page_title="Vavivê — Atendimentos + Carteirinhas", layout=
 # =========================
 
 def slugify_col(s: str) -> str:
-    """Normaliza nomes de colunas de forma estável para merges/filtros."""
     if s is None:
         return ""
     s = str(s).strip().lower()
@@ -38,20 +37,18 @@ def slugify_col(s: str) -> str:
     }
     for k, v in trocas.items():
         s = s.replace(k, v)
-    s = " ".join(s.split())              # normaliza espaços
+    s = " ".join(s.split())
     s = s.replace(" ", "_")
     s = "".join(ch for ch in s if ch.isalnum() or ch == "_")
     while "__" in s:
         s = s.replace("__", "_")
     return s.strip("_")
 
-
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     mapping = {c: slugify_col(c) for c in df.columns}
     df.rename(columns=mapping, inplace=True)
     return df
-
 
 def parse_datetime_col(serie):
     def parse_one(x):
@@ -60,7 +57,6 @@ def parse_datetime_col(serie):
         if isinstance(x, (pd.Timestamp, datetime)):
             return pd.to_datetime(x)
         if isinstance(x, (int, float)) and not isinstance(x, bool):
-            # Excel serial date/time
             try:
                 base = datetime(1899, 12, 30)
                 return base + timedelta(days=float(x))
@@ -82,12 +78,10 @@ def parse_datetime_col(serie):
             return pd.NaT
     return serie.apply(parse_one)
 
-
 def parse_time_hhmm(serie):
     dt = parse_datetime_col(serie)
     hhmm = dt.dt.strftime("%H:%M")
     return hhmm, dt
-
 
 def ensure_numeric_hours(serie):
     def to_hours(x):
@@ -95,7 +89,6 @@ def ensure_numeric_hours(serie):
             return np.nan
         if isinstance(x, (int, float)) and not isinstance(x, bool):
             val = float(x)
-            # Heurística: <=12 tratamos como horas; >12 pode ser dias (Excel)
             return val if val <= 12 else val * 24.0
         if isinstance(x, timedelta):
             return x.total_seconds() / 3600.0
@@ -113,48 +106,52 @@ def ensure_numeric_hours(serie):
             return np.nan
     return serie.apply(to_hours)
 
-
 def _ensure_series(df: pd.DataFrame, colname: str) -> pd.Series:
-    """Garante Series mesmo quando df[col] retorna DataFrame (colunas duplicadas)."""
     obj = df[colname]
     if isinstance(obj, pd.DataFrame):
         return obj.iloc[:, 0]
     return obj
 
 def _s(v):
-    """String segura: evita 'nan' e trata None/NaN."""
     return "" if (v is None or (isinstance(v, float) and pd.isna(v))) else str(v)
+
+def normalize_id_string(s: pd.Series) -> pd.Series:
+    """
+    Normaliza IDs para comparação robusta:
+    - converte para str
+    - remove espaços
+    - remove sufixo '.0'
+    - mantém apenas dígitos e letras (descarta separadores/ruídos)
+    """
+    s = s.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    s = s.apply(lambda x: "".join(re.findall(r"[0-9A-Za-z]+", x)))
+    return s
 
 # =========================
 # Mapeamentos
 # =========================
 
 ATEND_COLS = {
-    # alvo -> candidatos já normalizados
     "data": ["data", "data_1", "dt", "dt_atendimento", "data_atendimento"],
     "cliente": ["cliente", "nome_cliente", "cliente_nome"],
     "servico": ["servico", "tipo_servico", "descricao_servico"],
     "hora_entrada": ["hora_entrada", "entrada", "hora_inicio", "inicio", "horario", "hora", "hora_de_entrada"],
     "duracao_horas": ["duracao", "duracao_horas", "horas", "carga_horaria", "tempo", "horas_de_servico"],
     "profissional_nome": ["nome_do_profissional", "profissional", "nome_profissional", "prof_nome", "prestador"],
-    # cobre "#Num Prestador" e "#num+Prestador" após slugify -> "num_prestador"
-    "profissional_id": [
-        "num_prestador", "num_prestadora", "id_profissional", "numero_do_profissional",
-        "num_profissional", "num"
-    ],
-    # NOVO: status do serviço/atendimento (várias variações comuns)
-    "status": [
-        "status", "situacao", "status_servico", "situacao_servico",
-        "status_atendimento", "situacao_atendimento", "andamento", "etapa"
-    ],
+    # cobre "#Num Prestador" → "num_prestador" após slugify
+    "profissional_id": ["num_prestador", "num_prestadora", "id_profissional", "numero_do_profissional",
+                        "num_profissional", "num"],
+    "status": ["status", "situacao", "status_servico", "situacao_servico",
+               "status_atendimento", "situacao_atendimento", "andamento", "etapa"],
 }
 
+# Inclui 'matricula' como fonte de ID nas carteirinhas
 CART_COLS = {
-    "profissional_id": ["num_prestador", "id_profissional", "numero_do_profissional", "num_profissional", "num"],
+    "profissional_id": ["matricula", "num_prestador", "id_profissional",
+                        "numero_do_profissional", "num_profissional", "num"],
     "profissional_nome": ["profissional", "nome", "nome_profissional", "prof_nome", "prestador"],
     "foto_url": ["foto_url", "url", "link", "image", "foto", "photo", "photo_url"],
 }
-
 
 def pick_col(df, candidates):
     for c in candidates:
@@ -162,22 +159,16 @@ def pick_col(df, candidates):
             return c
     return None
 
-
 def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = normalize_columns(df_raw)
     cols = {k: pick_col(df, v) for k, v in ATEND_COLS.items()}
 
     out = pd.DataFrame()
-
-    if cols["data"] is not None:
-        out["data"] = parse_datetime_col(_ensure_series(df, cols["data"])).dt.date
-    else:
-        out["data"] = pd.NaT
-
+    out["data"] = parse_datetime_col(_ensure_series(df, cols["data"])).dt.date if cols["data"] else pd.NaT
     out["cliente"] = _ensure_series(df, cols["cliente"]).astype(str) if cols["cliente"] else ""
     out["servico"] = _ensure_series(df, cols["servico"]).astype(str) if cols["servico"] else ""
 
-    if cols["hora_entrada"] is not None:
+    if cols["hora_entrada"]:
         hhmm, dt_full = parse_time_hhmm(_ensure_series(df, cols["hora_entrada"]))
         out["hora_entrada"] = hhmm
         out["_hora_entrada_dt"] = dt_full
@@ -185,10 +176,9 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
         out["hora_entrada"] = ""
         out["_hora_entrada_dt"] = pd.NaT
 
-    if cols["duracao_horas"] is not None:
+    if cols["duracao_horas"]:
         out["duracao_horas"] = ensure_numeric_hours(_ensure_series(df, cols["duracao_horas"]))
     else:
-        # tentativa via hora fim - hora início (se existir)
         possiveis_fim = ["hora_fim", "saida", "hora_termino", "fim", "horario_fim"]
         fim_col = None
         for c in possiveis_fim:
@@ -196,7 +186,7 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
             if c_norm in df.columns:
                 fim_col = c_norm
                 break
-        if fim_col and cols["hora_entrada"] is not None:
+        if fim_col and cols["hora_entrada"]:
             _, dt_fim = parse_time_hhmm(_ensure_series(df, fim_col))
             dur = (dt_fim - out["_hora_entrada_dt"]).dt.total_seconds() / 3600.0
             out["duracao_horas"] = dur
@@ -205,18 +195,14 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     out["profissional_nome"] = _ensure_series(df, cols["profissional_nome"]).astype(str) if cols["profissional_nome"] else ""
     out["profissional_id"] = _ensure_series(df, cols["profissional_id"]).astype(str) if cols["profissional_id"] else ""
-
-    # NOVO: status do serviço
     out["status"] = _ensure_series(df, cols["status"]).astype(str) if cols["status"] else ""
 
     out["__nome_norm"] = (
         out["profissional_nome"].fillna("").str.strip().str.lower()
-        .str.normalize('NFKD').str.encode('ascii', 'ignore').str.decode('utf-8')
+          .str.normalize('NFKD').str.encode('ascii', 'ignore').str.decode('utf-8')
     )
-
     out["duracao_horas"] = out["duracao_horas"].round(2)
     return out
-
 
 def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = normalize_columns(df_raw)
@@ -229,9 +215,9 @@ def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     out["__nome_norm"] = (
         out["profissional_nome"].fillna("").str.strip().str.lower()
-        .str.normalize('NFKD').str.encode('ascii', 'ignore').str.decode('utf-8')
+          .str.normalize('NFKD').str.encode('ascii', 'ignore').str.decode('utf-8')
     )
-
+    # Mantém a melhor (com foto_url não vazia) por ID + nome
     out = (
         out.sort_values(by=["foto_url"], ascending=[False])
            .drop_duplicates(subset=["profissional_id", "__nome_norm"], keep="first")
@@ -243,7 +229,7 @@ def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
 # =========================
 
 st.title("📸 Vavivê — Atendimentos + Carteirinhas")
-st.caption("O app tenta a aba 'Clientes' do arquivo de Atendimentos. Se não houver, pega a primeira com dados.")
+st.caption("Aba 'Clientes' é priorizada no arquivo de Atendimentos; se não houver, pegue a primeira com dados.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -258,7 +244,6 @@ if not f_atend or not f_cart:
 # Leitura inteligente de abas
 try:
     xls_a = pd.ExcelFile(f_atend)
-    # Usa "Clientes" se existir; senão, primeira não vazia
     default_sheet = "Clientes" if "Clientes" in xls_a.sheet_names else None
     if default_sheet is None:
         chosen = None
@@ -269,7 +254,8 @@ try:
                 break
         default_sheet = chosen or xls_a.sheet_names[0]
     st.caption(":file_folder: Aba detectada no arquivo de Atendimentos")
-    sheet_sel = st.selectbox("Aba dos Atendimentos", options=xls_a.sheet_names, index=xls_a.sheet_names.index(default_sheet))
+    sheet_sel = st.selectbox("Aba dos Atendimentos", options=xls_a.sheet_names,
+                             index=xls_a.sheet_names.index(default_sheet))
     df_atend_raw = pd.read_excel(xls_a, sheet_name=sheet_sel)
 except Exception as e:
     st.error(f"Erro ao ler Atendimentos: {e}")
@@ -285,27 +271,38 @@ try:
             break
     chosen_c = chosen_c or xls_c.sheet_names[0]
     st.caption(":file_folder: Aba detectada no arquivo de Carteirinhas")
-    sheet_cart = st.selectbox("Aba das Carteirinhas", options=xls_c.sheet_names, index=xls_c.sheet_names.index(chosen_c))
+    sheet_cart = st.selectbox("Aba das Carteirinhas", options=xls_c.sheet_names,
+                              index=xls_c.sheet_names.index(chosen_c))
     df_cart_raw = pd.read_excel(xls_c, sheet_name=sheet_cart)
 except Exception as e:
     st.error(f"Erro ao ler Carteirinhas: {e}")
     st.stop()
 
-# Normalização
+# Normalização base
 at = coerce_atendimentos(df_atend_raw)
 ct = coerce_carteirinhas(df_cart_raw)
 
-# Merge por ID se possível, senão por nome
-merged = at.copy()
-has_id_at = merged["profissional_id"].astype(str).str.len() > 0
-has_id_ct = ct["profissional_id"].astype(str).str.len() > 0
+# ============ NORMALIZAÇÃO FORTE DE ID ============
+at["profissional_id"] = normalize_id_string(at["profissional_id"])
+ct["profissional_id"] = normalize_id_string(ct["profissional_id"])
 
-if has_id_at.any() and has_id_ct.any():
-    merged = merged.merge(ct[["profissional_id", "foto_url"]], on="profissional_id", how="left")
-else:
-    merged = merged.merge(ct[["__nome_norm", "foto_url"]], on="__nome_norm", how="left")
+# Merge PRIORITÁRIO por ID (left)
+merged = at.merge(ct[["profissional_id", "foto_url"]],
+                  on="profissional_id", how="left", suffixes=("", "_byid"))
 
-# Colunas finais (inclui status)
+# Fallback: para quem ainda não tem foto, tenta por nome normalizado
+faltam = merged["foto_url"].isna() | (merged["foto_url"].astype(str).str.strip() == "")
+if faltam.any():
+    aux = ct[["__nome_norm", "foto_url"]].rename(columns={"foto_url": "foto_url_byname"})
+    merged = merged.merge(aux, on="__nome_norm", how="left")
+    merged["foto_url"] = np.where(
+        (merged["foto_url"].astype(str).str.strip() == "") | merged["foto_url"].isna(),
+        merged["foto_url_byname"],
+        merged["foto_url"]
+    )
+    merged.drop(columns=["foto_url_byname"], inplace=True, errors="ignore")
+
+# Colunas finais
 final_cols = [
     "data", "cliente", "servico", "hora_entrada", "duracao_horas",
     "profissional_nome", "profissional_id", "status", "foto_url"
@@ -314,15 +311,17 @@ for c in final_cols:
     if c not in merged.columns:
         merged[c] = np.nan if c.endswith("_horas") else ""
 
-merged_view = merged[final_cols].sort_values(by=["data", "cliente", "profissional_nome"], ascending=[True, True, True])
+merged_view = merged[final_cols].sort_values(
+    by=["data", "cliente", "profissional_nome"], ascending=[True, True, True]
+)
 
-# ========= Ajuste CRÍTICO: evitar AttributeError em strings/NaN =========
-# Garante que 'foto_url' não seja NaN para evitar .strip() em float
+# Ajustes anti-NaN
 merged_view["foto_url"] = merged_view["foto_url"].fillna("")
-# Evita "nan" aparecendo em status
 merged_view["status"] = merged_view["status"].fillna("")
 
+# =========================
 # Filtros
+# =========================
 with st.expander("🔎 Filtros"):
     c1, c2, c3 = st.columns([1,1,2])
     datas = [d for d in merged_view["data"].dropna().unique()]
@@ -331,14 +330,8 @@ with st.expander("🔎 Filtros"):
     txt_cliente = c2.text_input("Cliente contém", "")
     txt_prof = c3.text_input("Profissional contém", "")
 
-    # NOVO: filtro de Status (multiseleção)
     status_unicos = sorted([s for s in merged_view["status"].dropna().unique() if str(s).strip() != ""])
-    status_sel = st.multiselect(
-        "Status do serviço",
-        options=status_unicos,
-        default=status_unicos,
-        help="Selecione um ou mais status. Se vazio, todos os status serão considerados."
-    )
+    status_sel = st.multiselect("Status do serviço", options=status_unicos, default=status_unicos)
 
     mask = pd.Series([True]*len(merged_view))
     if data_sel != "(todas)":
@@ -347,15 +340,17 @@ with st.expander("🔎 Filtros"):
         mask &= merged_view["cliente"].str.contains(txt_cliente.strip(), case=False, na=False)
     if txt_prof.strip():
         mask &= merged_view["profissional_nome"].str.contains(txt_prof.strip(), case=False, na=False)
-    if status_sel:  # se nada selecionado, não filtra por status
+    if status_sel:
         mask &= merged_view["status"].isin(status_sel)
 
     merged_view = merged_view[mask]
 
+# =========================
+# Tabela e Cartões
+# =========================
 st.subheader("📄 Tabela de Atendimentos")
 st.dataframe(merged_view, use_container_width=True, hide_index=True)
 
-# Cartões com foto
 st.subheader("🖼️ Cartões com Foto")
 if merged_view.empty:
     st.info("Nenhum atendimento para exibir.")
@@ -373,15 +368,10 @@ else:
                     f"📅 {_s(row.get('data'))}  ⏱️ {_s(row.get('hora_entrada'))}  •  {_s(row.get('duracao_horas'))}h"
                     + (f"  •  🔖 {status_txt}" if status_txt else "")
                 )
-                st.write(f"👤 {_s(row.get('profissional_nome'))}  |  ID: {_s(row.get('profissional_id'))}")
+                st.write(f"👤 {_s(row.get('profissional_nome'))} | ID: {_s(row.get('profissional_id'))}")
 
-                # Tratamento seguro da URL (evita .strip() em NaN/float)
                 val = row.get("foto_url", None)
-                if val is None or (isinstance(val, float) and pd.isna(val)):
-                    url = ""
-                else:
-                    url = str(val).strip()
-
+                url = "" if (val is None or (isinstance(val, float) and pd.isna(val))) else str(val).strip()
                 if url:
                     try:
                         st.image(url, use_column_width=True, caption=_s(row.get('profissional_nome')))
@@ -390,7 +380,9 @@ else:
                 else:
                     st.info("Sem foto cadastrada.")
 
+# =========================
 # Exportar
+# =========================
 st.subheader("⬇️ Exportar")
 csv_bytes = merged_view.to_csv(index=False).encode("utf-8-sig")
 st.download_button("Baixar CSV", data=csv_bytes, file_name="atendimentos_fotos.csv", mime="text/csv")
@@ -413,4 +405,4 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
-st.caption("Dica: se existir a aba 'Clientes', ela é priorizada. Se não, a primeira aba com dados é usada (você pode trocar no seletor).")
+st.caption("Cruzamento PRIORITÁRIO por ID/Matrícula (#Num Prestador). Se não houver match de ID, tenta por nome.")
