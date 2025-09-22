@@ -141,10 +141,13 @@ ATEND_COLS = {
     "profissional_nome": ["nome_do_profissional", "profissional", "nome_profissional", "prof_nome", "prestador"],
     "profissional_id": ["num_prestador", "num_prestadora", "id_profissional", "numero_do_profissional", "num_profissional", "num"],
     "status": ["status", "situacao", "status_servico", "situacao_servico", "status_atendimento", "situacao_atendimento", "andamento", "etapa"],
-    # observações do atendimento
-    "observacoes": ["obs", "observacoes", "observações", "observacao", "observação", "observ", "observacoes_do_atendimento", "observacao_do_atendimento"],
+    "observacoes": ["obs","observacoes","observações","observacao","observação"],
+    "observacoes_prestador": [
+        "obs_prestador","observacoes_prestador","observações_prestador",
+        "observacao_prestador","observação_prestador","obs_profissional",
+        "comentario_prestador","comentarios_prestador"
+    ],
 }
-
 CART_COLS = {
     "profissional_id": ["matricula", "num_prestador", "id_profissional", "numero_do_profissional", "num_profissional", "num"],
     "profissional_nome": ["profissional", "nome", "nome_profissional", "prof_nome", "prestador"],
@@ -206,7 +209,15 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
         .str.normalize("NFKD").str.encode("ascii", "ignore").str.decode("utf-8")
     )
     out["duracao_horas"] = out["duracao_horas"].round(2)
+
+    out["observacoes_prestador"] = (
+        _ensure_series(df, cols["observacoes_prestador"]).astype(str)
+        if cols.get("observacoes_prestador") else ""
+    )
+
+    
     return out
+
 
 def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = normalize_columns(df_raw)
@@ -299,9 +310,11 @@ if faltam.any():
 # =========================
 
 final_cols = [
-    "data", "cliente", "servico", "endereco", "hora_entrada", "duracao_horas",
-    "profissional_nome", "profissional_id", "status", "observacoes", "foto_url"
+    "data","cliente","servico","endereco","hora_entrada","duracao_horas",
+    "profissional_nome","profissional_id","status",
+    "observacoes","observacoes_prestador","foto_url"
 ]
+
 for c in final_cols:
     if c not in merged.columns:
         merged[c] = np.nan if c.endswith("_horas") else ""
@@ -345,7 +358,9 @@ st.subheader("🖼️ Cartões")
 if merged_view.empty:
     st.info("Nenhum atendimento para exibir.")
 else:
+    # ajuste a quantidade de cartões por linha se quiser (apenas visual)
     n_cols = st.slider("Colunas", 1, 4, 2, help="Quantidade de cartões por linha")
+
     rows = [merged_view.iloc[i:i+n_cols] for i in range(0, len(merged_view), n_cols)]
     for r in rows:
         cols = st.columns(len(r))
@@ -360,17 +375,28 @@ else:
                 prof      = _s(row.get("profissional_nome"))
                 pid       = _s(row.get("profissional_id"))
                 endereco  = _s(row.get("endereco"))
-                obs       = _s(row.get("observacoes")).strip()
 
-                val = row.get("foto_url", None)
-                url = "" if (val is None or (isinstance(val, float) and pd.isna(val))) else str(val).strip()
+                # --- NOVO: Observações ---
+                obs = _s(row.get("observacoes")).strip()
+                obs_prestador = _s(row.get("observacoes_prestador")).strip()
 
                 obs_html = f"""
-                    <div style="margin-top:8px; padding:10px 12px; background:#f1f5f9; color:#0f172a;
-                                border-radius:10px; font-size:0.92rem;">
+                    <div style="margin-top:8px; padding:10px 12px; background:#f1f5f9;
+                                border-radius:10px; font-size:0.9rem; color:#0f172a;">
                         <strong>Obs:</strong> {obs}
                     </div>
                 """ if obs else ""
+
+                obs_prestador_html = f"""
+                    <div style="margin-top:8px; padding:10px 12px; background:#fef9c3;
+                                border-radius:10px; font-size:0.9rem; color:#713f12;">
+                        <strong>Obs Prestador:</strong> {obs_prestador}
+                    </div>
+                """ if obs_prestador else ""
+
+                # imagem
+                val = row.get("foto_url", None)
+                url = "" if (val is None or (isinstance(val, float) and pd.isna(val))) else str(val).strip()
 
                 html = f"""
                 <div style="display:flex; gap:16px; align-items:flex-start;
@@ -380,7 +406,7 @@ else:
                     <div style="font-weight:700; font-size:1.05rem; margin-bottom:2px; color:#0f172a;">{cliente}</div>
                     <div style="color:#64748b; margin-bottom:8px;">{servico}</div>
 
-                    <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:0.92rem; margin-bottom:8px; color:#334155;">
+                    <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:0.92rem; margin-bottom:8px; color:#334155;">
                       <span>📅 {data_br}</span>
                       <span>⏱️ {hora} • {dur}h</span>
                       {f'<span>🔖 {status}</span>' if status else ''}
@@ -395,6 +421,7 @@ else:
                     </div>
 
                     {obs_html}
+                    {obs_prestador_html}
                   </div>
 
                   <div style="width:130px; text-align:center;">
@@ -406,7 +433,9 @@ else:
                   </div>
                 </div>
                 """
-                components.html(html, height=220, scrolling=False)
+
+                # Renderiza SEM escapar (não vira código)
+                components.html(html, height=260, scrolling=False)  # ajuste a altura se o conteúdo ficar maior
 
 # =========================
 # Exportar
@@ -434,5 +463,6 @@ st.download_button(
 )
 
 st.caption("Dica: ajuste a largura da foto mudando o 'width' do container da imagem (atualmente 130px).")
+
 
 
