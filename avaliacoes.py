@@ -121,6 +121,10 @@ def _ensure_series(df: pd.DataFrame, colname: str) -> pd.Series:
         return obj.iloc[:, 0]
     return obj
 
+def _s(v):
+    """String segura: evita 'nan' e trata None/NaN."""
+    return "" if (v is None or (isinstance(v, float) and pd.isna(v))) else str(v)
+
 # =========================
 # Mapeamentos
 # =========================
@@ -304,6 +308,10 @@ for c in final_cols:
 
 merged_view = merged[final_cols].sort_values(by=["data", "cliente", "profissional_nome"], ascending=[True, True, True])
 
+# ========= Ajuste CRÍTICO: evitar AttributeError em strings/NaN =========
+# Garante que 'foto_url' não seja NaN para evitar .strip() em float
+merged_view["foto_url"] = merged_view["foto_url"].fillna("")
+
 # Filtros
 with st.expander("🔎 Filtros"):
     c1, c2, c3 = st.columns([1,1,2])
@@ -336,14 +344,21 @@ else:
         cols = st.columns(len(r))
         for col, (_, row) in zip(cols, r.iterrows()):
             with col:
-                st.markdown(f"**{row['cliente']}**")
-                st.caption(f"{row['servico'] or ''}")
-                st.write(f"📅 {row['data']}  ⏱️ {row['hora_entrada'] or ''}  •  {row['duracao_horas']}h")
-                st.write(f"👤 {row['profissional_nome']}  |  ID: {row['profissional_id']}")
-                url = (row.get('foto_url', '') or '').strip()
+                st.markdown(f"**{_s(row.get('cliente'))}**")
+                st.caption(f"{_s(row.get('servico'))}")
+                st.write(f"📅 {_s(row.get('data'))}  ⏱️ {_s(row.get('hora_entrada'))}  •  {_s(row.get('duracao_horas'))}h")
+                st.write(f"👤 {_s(row.get('profissional_nome'))}  |  ID: {_s(row.get('profissional_id'))}")
+
+                # Tratamento seguro da URL (evita .strip() em NaN/float)
+                val = row.get("foto_url", None)
+                if val is None or (isinstance(val, float) and pd.isna(val)):
+                    url = ""
+                else:
+                    url = str(val).strip()
+
                 if url:
                     try:
-                        st.image(url, use_column_width=True, caption=row['profissional_nome'])
+                        st.image(url, use_column_width=True, caption=_s(row.get('profissional_nome')))
                     except Exception:
                         st.warning("Não foi possível carregar a imagem desta URL.")
                 else:
