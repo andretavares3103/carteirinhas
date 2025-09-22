@@ -15,6 +15,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import io
 import re
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Vavivê — Atendimentos + Carteirinhas", layout="wide")
 
@@ -405,7 +406,7 @@ else:
                   </div>
                 </div>
                 """
-                st.markdown(html, unsafe_allow_html=True)
+                components.html(html, height=220, scrolling=False)
 
 # =========================
 # Exportar
@@ -433,3 +434,4 @@ st.download_button(
 )
 
 st.caption("Dica: ajuste a largura da foto mudando o 'width' do container da imagem (atualmente 130px).")
+
