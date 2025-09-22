@@ -243,7 +243,7 @@ else:
                 url = "" if (val is None or (isinstance(val,float) and pd.isna(val))) else str(val).strip()
                 if url:
                     try:
-                        st.image(url, width=480, caption=_s(row.get('profissional_nome')))
+                        st.image(url, width=240, caption=_s(row.get('profissional_nome')))
                     except Exception:
                         st.warning("Não foi possível carregar a imagem desta URL.")
                 else:
@@ -268,6 +268,7 @@ st.download_button("Baixar Excel", data=out.getvalue(),
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.caption("Agora a coluna **Carteirinha** é reconhecida como fonte de foto. Cruzamento por ID é prioridade.")
+
 
 
 
