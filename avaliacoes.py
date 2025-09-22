@@ -2,20 +2,13 @@
 # -------------------------------------------------------------
 # Vavivê — Visualizador de Atendimentos + Carteirinhas (Streamlit)
 # -------------------------------------------------------------
-# Upload de 2 arquivos Excel:
-#  - Atendimentos (prioriza aba "Clientes")
-#  - Carteirinhas (fotos/links)
-# Cruzamento PRIORITÁRIO por ID/Matrícula (#Num Prestador ↔ Matricula)
-# Cartões com layout: texto à esquerda e foto à direita
-# -------------------------------------------------------------
-
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import io
 import re
-import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Vavivê — Atendimentos + Carteirinhas", layout="wide")
 
@@ -134,7 +127,6 @@ ATEND_COLS = {
     "data": ["data", "data_1", "dt", "dt_atendimento", "data_atendimento"],
     "cliente": ["cliente", "nome_cliente", "cliente_nome"],
     "servico": ["servico", "tipo_servico", "descricao_servico"],
-    # endereço do atendimento
     "endereco": ["endereco", "endereço", "endereco_completo", "endereco_cliente", "logradouro", "rua", "address"],
     "hora_entrada": ["hora_entrada", "entrada", "hora_inicio", "inicio", "horario", "hora", "hora_de_entrada"],
     "duracao_horas": ["duracao", "duracao_horas", "horas", "carga_horaria", "tempo", "horas_de_servico"],
@@ -143,12 +135,17 @@ ATEND_COLS = {
     "status": ["status", "situacao", "status_servico", "situacao_servico", "status_atendimento", "situacao_atendimento", "andamento", "etapa"],
     # observações do atendimento
     "observacoes": ["obs", "observacoes", "observações", "observacao", "observação", "observ", "observacoes_do_atendimento", "observacao_do_atendimento"],
+    # observações do prestador
+    "observacoes_prestador": [
+        "obs_prestador","observacoes_prestador","observações_prestador",
+        "observacao_prestador","observação_prestador","obs_profissional",
+        "comentario_prestador","comentarios_prestador"
+    ],
 }
 
 CART_COLS = {
     "profissional_id": ["matricula", "num_prestador", "id_profissional", "numero_do_profissional", "num_profissional", "num"],
     "profissional_nome": ["profissional", "nome", "nome_profissional", "prof_nome", "prestador"],
-    # aceita "Carteirinha"
     "foto_url": ["carteirinha", "carteirinhas", "foto_url", "url", "link", "image", "foto", "photo", "photo_url"],
 }
 
@@ -183,23 +180,16 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
     if cols["duracao_horas"]:
         out["duracao_horas"] = ensure_numeric_hours(_ensure_series(df, cols["duracao_horas"]))
     else:
-        possiveis_fim = ["hora_fim", "saida", "hora_termino", "fim", "horario_fim"]
-        fim_col = None
-        for c in possiveis_fim:
-            c_norm = slugify_col(c)
-            if c_norm in df.columns:
-                fim_col = c_norm
-                break
-        if fim_col and cols["hora_entrada"]:
-            _, dt_fim = parse_time_hhmm(_ensure_series(df, fim_col))
-            out["duracao_horas"] = (dt_fim - out["_hora_entrada_dt"]).dt.total_seconds() / 3600.0
-        else:
-            out["duracao_horas"] = np.nan
+        out["duracao_horas"] = np.nan
 
     out["profissional_nome"] = _ensure_series(df, cols["profissional_nome"]).astype(str) if cols["profissional_nome"] else ""
     out["profissional_id"] = _ensure_series(df, cols["profissional_id"]).astype(str) if cols["profissional_id"] else ""
     out["status"] = _ensure_series(df, cols["status"]).astype(str) if cols["status"] else ""
     out["observacoes"] = _ensure_series(df, cols["observacoes"]).astype(str) if cols.get("observacoes") else ""
+    out["observacoes_prestador"] = (
+        _ensure_series(df, cols["observacoes_prestador"]).astype(str)
+        if cols.get("observacoes_prestador") else ""
+    )
 
     out["__nome_norm"] = (
         out["profissional_nome"].fillna("").str.strip().str.lower()
@@ -216,7 +206,6 @@ def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
     out["profissional_id"] = _ensure_series(df, cols["profissional_id"]).astype(str) if cols["profissional_id"] else ""
     out["profissional_nome"] = _ensure_series(df, cols["profissional_nome"]).astype(str) if cols["profissional_nome"] else ""
     out["foto_url"] = _ensure_series(df, cols["foto_url"]).astype(str) if cols["foto_url"] else ""
-
     out["__nome_norm"] = (
         out["profissional_nome"].fillna("").str.strip().str.lower()
         .str.normalize("NFKD").str.encode("ascii", "ignore").str.decode("utf-8")
@@ -228,45 +217,23 @@ def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # =========================
-# UI e Leitura de arquivos
+# Upload e leitura
 # =========================
 
 st.title("📸 Vavivê — Atendimentos + Carteirinhas")
-st.caption("Cruzamento PRIORITÁRIO por ID (#Num Prestador ↔ Matricula). Se faltar ID, tenta por nome.")
 
 c1, c2 = st.columns(2)
 with c1:
-    f_atend = st.file_uploader("Arquivo de Atendimentos (Excel)", type=["xlsx", "xls"], key="up_atend")
+    f_atend = st.file_uploader("Arquivo de Atendimentos (Excel)", type=["xlsx","xls"], key="up_atend")
 with c2:
-    f_cart = st.file_uploader("Arquivo de Carteirinhas (Excel) — fotos/links", type=["xlsx", "xls"], key="up_cart")
+    f_cart = st.file_uploader("Arquivo de Carteirinhas (Excel) — fotos/links", type=["xlsx","xls"], key="up_cart")
 
 if not f_atend or not f_cart:
     st.info("⬆️ Carregue os dois arquivos para continuar.")
     st.stop()
 
-def pick_sheet(excel_file, prefer="Clientes"):
-    xls = pd.ExcelFile(excel_file)
-    if prefer in xls.sheet_names:
-        return prefer
-    for s in xls.sheet_names:
-        tmp = pd.read_excel(xls, sheet_name=s, nrows=5)
-        if not tmp.empty and tmp.dropna(how="all", axis=1).shape[1] > 0:
-            return s
-    return xls.sheet_names[0]
-
-try:
-    sa = pick_sheet(f_atend, "Clientes")
-    df_atend_raw = pd.read_excel(pd.ExcelFile(f_atend), sheet_name=sa)
-except Exception as e:
-    st.error(f"Erro ao ler Atendimentos: {e}")
-    st.stop()
-
-try:
-    sc = pick_sheet(f_cart)
-    df_cart_raw = pd.read_excel(pd.ExcelFile(f_cart), sheet_name=sc)
-except Exception as e:
-    st.error(f"Erro ao ler Carteirinhas: {e}")
-    st.stop()
+df_atend_raw = pd.read_excel(pd.ExcelFile(f_atend), sheet_name=0)
+df_cart_raw = pd.read_excel(pd.ExcelFile(f_cart), sheet_name=0)
 
 # =========================
 # Normalização + Merge
@@ -275,14 +242,14 @@ except Exception as e:
 at = coerce_atendimentos(df_atend_raw)
 ct = coerce_carteirinhas(df_cart_raw)
 
-# Normalização forte do ID
+# normalização forte do ID
 at["profissional_id"] = normalize_id_string(at["profissional_id"])
 ct["profissional_id"] = normalize_id_string(ct["profissional_id"])
 
-# Merge por ID (left)
+# merge por ID
 merged = at.merge(ct[["profissional_id", "foto_url"]], on="profissional_id", how="left")
 
-# Fallback por nome (se necessário)
+# fallback por nome (se ainda sem foto)
 faltam = merged["foto_url"].isna() | (merged["foto_url"].astype(str).str.strip() == "")
 if faltam.any():
     aux = ct[["__nome_norm", "foto_url"]].rename(columns={"foto_url": "foto_url_byname"})
@@ -299,20 +266,22 @@ if faltam.any():
 # =========================
 
 final_cols = [
-    "data", "cliente", "servico", "endereco", "hora_entrada", "duracao_horas",
-    "profissional_nome", "profissional_id", "status", "observacoes", "foto_url"
+    "data","cliente","servico","endereco","hora_entrada","duracao_horas",
+    "profissional_nome","profissional_id","status",
+    "observacoes","observacoes_prestador","foto_url"
 ]
 for c in final_cols:
     if c not in merged.columns:
         merged[c] = np.nan if c.endswith("_horas") else ""
 
-merged_view = merged[final_cols].sort_values(by=["data", "cliente", "profissional_nome"])
+merged_view = merged[final_cols].sort_values(by=["data","cliente","profissional_nome"])
 merged_view["foto_url"] = merged_view["foto_url"].fillna("")
 merged_view["status"] = merged_view["status"].fillna("")
 merged_view["observacoes"] = merged_view["observacoes"].fillna("")
+merged_view["observacoes_prestador"] = merged_view["observacoes_prestador"].fillna("")
 
 with st.expander("🔎 Filtros"):
-    cA, cB, cC = st.columns([1, 1, 2])
+    cA, cB, cC = st.columns([1,1,2])
     datas = sorted([d for d in merged_view["data"].dropna().unique() if pd.notna(d)])
     data_sel = cA.selectbox("Filtrar por Data", options=["(todas)"] + datas, index=0)
     txt_cliente = cB.text_input("Cliente contém", "")
@@ -345,6 +314,9 @@ st.subheader("🖼️ Cartões")
 if merged_view.empty:
     st.info("Nenhum atendimento para exibir.")
 else:
+    # ajuste aqui a altura do iframe dos cartões, se precisar
+    BASE_HEIGHT = 280
+
     n_cols = st.slider("Colunas", 1, 4, 2, help="Quantidade de cartões por linha")
     rows = [merged_view.iloc[i:i+n_cols] for i in range(0, len(merged_view), n_cols)]
     for r in rows:
@@ -361,26 +333,32 @@ else:
                 pid       = _s(row.get("profissional_id"))
                 endereco  = _s(row.get("endereco"))
                 obs       = _s(row.get("observacoes")).strip()
-
-                val = row.get("foto_url", None)
-                url = "" if (val is None or (isinstance(val, float) and pd.isna(val))) else str(val).strip()
+                obs_prest = _s(row.get("observacoes_prestador")).strip()
+                url       = _s(row.get("foto_url")).strip()
 
                 obs_html = f"""
                     <div style="margin-top:8px; padding:10px 12px; background:#f1f5f9; color:#0f172a;
-                                border-radius:10px; font-size:0.92rem;">
+                                border-radius:10px; font-size:0.9rem;">
                         <strong>Obs:</strong> {obs}
                     </div>
                 """ if obs else ""
 
+                obs_prestador_html = f"""
+                    <div style="margin-top:8px; padding:10px 12px; background:#fef9c3;
+                                border-radius:10px; font-size:0.9rem; color:#713f12;">
+                        <strong>Obs Prestador:</strong> {obs_prest}
+                    </div>
+                """ if obs_prest else ""
+
                 html = f"""
                 <div style="display:flex; gap:16px; align-items:flex-start;
                             border:1px solid #e5e7eb; padding:12px 14px; border-radius:14px;
-                            background:#ffffff; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
+                            background:#ffffff; box-shadow:0 1px 2px rgba(0,0,0,0.03); font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial;">
                   <div style="flex:1; min-width:0;">
                     <div style="font-weight:700; font-size:1.05rem; margin-bottom:2px; color:#0f172a;">{cliente}</div>
                     <div style="color:#64748b; margin-bottom:8px;">{servico}</div>
 
-                    <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:0.92rem; margin-bottom:8px; color:#334155;">
+                    <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:0.92rem; margin-bottom:8px; color:#334155;">
                       <span>📅 {data_br}</span>
                       <span>⏱️ {hora} • {dur}h</span>
                       {f'<span>🔖 {status}</span>' if status else ''}
@@ -395,6 +373,7 @@ else:
                     </div>
 
                     {obs_html}
+                    {obs_prestador_html}
                   </div>
 
                   <div style="width:130px; text-align:center;">
@@ -406,7 +385,10 @@ else:
                   </div>
                 </div>
                 """
-                components.html(html, height=220, scrolling=False)
+
+                # Altura variável simples baseada no tamanho das observações (para evitar scroll)
+                extra = int(len(obs) / 120) * 24 + int(len(obs_prest) / 120) * 24
+                components.html(html, height=BASE_HEIGHT + min(240, extra), scrolling=False)
 
 # =========================
 # Exportar
@@ -433,7 +415,4 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
-st.caption("Dica: ajuste a largura da foto mudando o 'width' do container da imagem (atualmente 130px).")
-
-
-
+st.caption("Dica: ajuste a largura da foto mudando o 'width:130px' no bloco da imagem; ajuste a altura pelo BASE_HEIGHT/extra.")
