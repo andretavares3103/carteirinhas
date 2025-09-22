@@ -2,13 +2,6 @@
 # -------------------------------------------------------------
 # Vavivê — Visualizador de Atendimentos + Carteirinhas (Streamlit)
 # -------------------------------------------------------------
-# Upload de 2 arquivos Excel:
-#  - Atendimentos (prioriza aba "Clientes")
-#  - Carteirinhas (fotos/links)
-# Cruzamento PRIORITÁRIO por ID/Matrícula (#Num Prestador ↔ Matricula)
-# Cartões com layout: texto à esquerda e foto à direita
-# -------------------------------------------------------------
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -126,29 +119,26 @@ def format_date_br(d):
         return str(d)
 
 # =========================
-# Mapeamentos de colunas
+# Mapeamentos
 # =========================
 
 ATEND_COLS = {
     "data": ["data", "data_1", "dt", "dt_atendimento", "data_atendimento"],
     "cliente": ["cliente", "nome_cliente", "cliente_nome"],
     "servico": ["servico", "tipo_servico", "descricao_servico"],
-    # endereço do atendimento
-    "endereco": ["endereco", "endereço", "endereco_completo", "endereco_cliente", "logradouro", "rua", "address"],
-    "hora_entrada": ["hora_entrada", "entrada", "hora_inicio", "inicio", "horario", "hora", "hora_de_entrada"],
-    "duracao_horas": ["duracao", "duracao_horas", "horas", "carga_horaria", "tempo", "horas_de_servico"],
-    "profissional_nome": ["nome_do_profissional", "profissional", "nome_profissional", "prof_nome", "prestador"],
-    "profissional_id": ["num_prestador", "num_prestadora", "id_profissional", "numero_do_profissional", "num_profissional", "num"],
-    "status": ["status", "situacao", "status_servico", "situacao_servico", "status_atendimento", "situacao_atendimento", "andamento", "etapa"],
-    # observações do atendimento
-    "observacoes": ["obs", "observacoes", "observações", "observacao", "observação", "observ", "observacoes_do_atendimento", "observacao_do_atendimento"],
+    "endereco": ["endereco","endereço","endereco_completo","endereco_cliente","logradouro","rua","address"],
+    "hora_entrada": ["hora_entrada","entrada","hora_inicio","inicio","horario","hora","hora_de_entrada"],
+    "duracao_horas": ["duracao","duracao_horas","horas","carga_horaria","tempo","horas_de_servico"],
+    "profissional_nome": ["nome_do_profissional","profissional","nome_profissional","prof_nome","prestador"],
+    "profissional_id": ["num_prestador","num_prestadora","id_profissional","numero_do_profissional","num_profissional","num"],
+    "status": ["status","situacao","status_servico","situacao_servico","status_atendimento","situacao_atendimento","andamento","etapa"],
+    "observacoes": ["obs","observacoes","observações","observacao","observação"],
 }
 
 CART_COLS = {
-    "profissional_id": ["matricula", "num_prestador", "id_profissional", "numero_do_profissional", "num_profissional", "num"],
-    "profissional_nome": ["profissional", "nome", "nome_profissional", "prof_nome", "prestador"],
-    # aceita "Carteirinha"
-    "foto_url": ["carteirinha", "carteirinhas", "foto_url", "url", "link", "image", "foto", "photo", "photo_url"],
+    "profissional_id": ["matricula","num_prestador","id_profissional","numero_do_profissional","num_profissional","num"],
+    "profissional_nome": ["profissional","nome","nome_profissional","prof_nome","prestador"],
+    "foto_url": ["carteirinha","carteirinhas","foto_url","url","link","image","foto","photo","photo_url"],
 }
 
 def pick_col(df, candidates):
@@ -170,7 +160,6 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
     out["cliente"] = _ensure_series(df, cols["cliente"]).astype(str) if cols["cliente"] else ""
     out["servico"] = _ensure_series(df, cols["servico"]).astype(str) if cols["servico"] else ""
     out["endereco"] = _ensure_series(df, cols["endereco"]).astype(str) if cols.get("endereco") else ""
-
     if cols["hora_entrada"]:
         hhmm, dt_full = parse_time_hhmm(_ensure_series(df, cols["hora_entrada"]))
         out["hora_entrada"] = hhmm
@@ -178,31 +167,17 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
     else:
         out["hora_entrada"] = ""
         out["_hora_entrada_dt"] = pd.NaT
-
     if cols["duracao_horas"]:
         out["duracao_horas"] = ensure_numeric_hours(_ensure_series(df, cols["duracao_horas"]))
     else:
-        possiveis_fim = ["hora_fim", "saida", "hora_termino", "fim", "horario_fim"]
-        fim_col = None
-        for c in possiveis_fim:
-            c_norm = slugify_col(c)
-            if c_norm in df.columns:
-                fim_col = c_norm
-                break
-        if fim_col and cols["hora_entrada"]:
-            _, dt_fim = parse_time_hhmm(_ensure_series(df, fim_col))
-            out["duracao_horas"] = (dt_fim - out["_hora_entrada_dt"]).dt.total_seconds() / 3600.0
-        else:
-            out["duracao_horas"] = np.nan
-
+        out["duracao_horas"] = np.nan
     out["profissional_nome"] = _ensure_series(df, cols["profissional_nome"]).astype(str) if cols["profissional_nome"] else ""
     out["profissional_id"] = _ensure_series(df, cols["profissional_id"]).astype(str) if cols["profissional_id"] else ""
     out["status"] = _ensure_series(df, cols["status"]).astype(str) if cols["status"] else ""
     out["observacoes"] = _ensure_series(df, cols["observacoes"]).astype(str) if cols.get("observacoes") else ""
-
     out["__nome_norm"] = (
         out["profissional_nome"].fillna("").str.strip().str.lower()
-        .str.normalize("NFKD").str.encode("ascii", "ignore").str.decode("utf-8")
+        .str.normalize("NFKD").str.encode("ascii","ignore").str.decode("utf-8")
     )
     out["duracao_horas"] = out["duracao_horas"].round(2)
     return out
@@ -210,226 +185,92 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
 def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = normalize_columns(df_raw)
     cols = {k: pick_col(df, v) for k, v in CART_COLS.items()}
-
     out = pd.DataFrame()
     out["profissional_id"] = _ensure_series(df, cols["profissional_id"]).astype(str) if cols["profissional_id"] else ""
     out["profissional_nome"] = _ensure_series(df, cols["profissional_nome"]).astype(str) if cols["profissional_nome"] else ""
     out["foto_url"] = _ensure_series(df, cols["foto_url"]).astype(str) if cols["foto_url"] else ""
-
     out["__nome_norm"] = (
         out["profissional_nome"].fillna("").str.strip().str.lower()
-        .str.normalize("NFKD").str.encode("ascii", "ignore").str.decode("utf-8")
+        .str.normalize("NFKD").str.encode("ascii","ignore").str.decode("utf-8")
     )
-    out = (
-        out.sort_values(by=["foto_url"], ascending=[False])
-           .drop_duplicates(subset=["profissional_id", "__nome_norm"], keep="first")
-    )
+    out = (out.sort_values(by=["foto_url"], ascending=[False])
+              .drop_duplicates(subset=["profissional_id","__nome_norm"], keep="first"))
     return out
 
 # =========================
-# UI e Leitura de arquivos
+# Upload e leitura
 # =========================
 
 st.title("📸 Vavivê — Atendimentos + Carteirinhas")
-st.caption("Cruzamento PRIORITÁRIO por ID (#Num Prestador ↔ Matricula). Se faltar ID, tenta por nome.")
 
 c1, c2 = st.columns(2)
 with c1:
-    f_atend = st.file_uploader("Arquivo de Atendimentos (Excel)", type=["xlsx", "xls"], key="up_atend")
+    f_atend = st.file_uploader("Arquivo de Atendimentos (Excel)", type=["xlsx","xls"], key="up_atend")
 with c2:
-    f_cart = st.file_uploader("Arquivo de Carteirinhas (Excel) — fotos/links", type=["xlsx", "xls"], key="up_cart")
+    f_cart = st.file_uploader("Arquivo de Carteirinhas (Excel)", type=["xlsx","xls"], key="up_cart")
 
 if not f_atend or not f_cart:
     st.info("⬆️ Carregue os dois arquivos para continuar.")
     st.stop()
 
-def pick_sheet(excel_file, prefer="Clientes"):
-    xls = pd.ExcelFile(excel_file)
-    if prefer in xls.sheet_names:
-        return prefer
-    for s in xls.sheet_names:
-        tmp = pd.read_excel(xls, sheet_name=s, nrows=5)
-        if not tmp.empty and tmp.dropna(how="all", axis=1).shape[1] > 0:
-            return s
-    return xls.sheet_names[0]
-
-try:
-    sa = pick_sheet(f_atend, "Clientes")
-    df_atend_raw = pd.read_excel(pd.ExcelFile(f_atend), sheet_name=sa)
-except Exception as e:
-    st.error(f"Erro ao ler Atendimentos: {e}")
-    st.stop()
-
-try:
-    sc = pick_sheet(f_cart)
-    df_cart_raw = pd.read_excel(pd.ExcelFile(f_cart), sheet_name=sc)
-except Exception as e:
-    st.error(f"Erro ao ler Carteirinhas: {e}")
-    st.stop()
-
-# =========================
-# Normalização + Merge
-# =========================
+df_atend_raw = pd.read_excel(pd.ExcelFile(f_atend), sheet_name=0)
+df_cart_raw = pd.read_excel(pd.ExcelFile(f_cart), sheet_name=0)
 
 at = coerce_atendimentos(df_atend_raw)
 ct = coerce_carteirinhas(df_cart_raw)
-
-# Normalização forte do ID
 at["profissional_id"] = normalize_id_string(at["profissional_id"])
 ct["profissional_id"] = normalize_id_string(ct["profissional_id"])
 
-# Merge por ID (left)
-merged = at.merge(ct[["profissional_id", "foto_url"]], on="profissional_id", how="left")
-
-# Fallback por nome (se necessário)
-faltam = merged["foto_url"].isna() | (merged["foto_url"].astype(str).str.strip() == "")
+merged = at.merge(ct[["profissional_id","foto_url"]], on="profissional_id", how="left")
+faltam = merged["foto_url"].isna() | (merged["foto_url"].astype(str).str.strip()=="")
 if faltam.any():
-    aux = ct[["__nome_norm", "foto_url"]].rename(columns={"foto_url": "foto_url_byname"})
+    aux = ct[["__nome_norm","foto_url"]].rename(columns={"foto_url":"foto_url_byname"})
     merged = merged.merge(aux, on="__nome_norm", how="left")
     merged["foto_url"] = np.where(
-        (merged["foto_url"].astype(str).str.strip() == "") | merged["foto_url"].isna(),
+        (merged["foto_url"].astype(str).str.strip()=="") | merged["foto_url"].isna(),
         merged["foto_url_byname"],
         merged["foto_url"]
     )
     merged.drop(columns=["foto_url_byname"], inplace=True, errors="ignore")
 
-# =========================
-# Visão final + filtros
-# =========================
-
-final_cols = [
-    "data", "cliente", "servico", "endereco", "hora_entrada", "duracao_horas",
-    "profissional_nome", "profissional_id", "status", "observacoes", "foto_url"
-]
+final_cols = ["data","cliente","servico","endereco","hora_entrada","duracao_horas",
+              "profissional_nome","profissional_id","status","observacoes","foto_url"]
 for c in final_cols:
     if c not in merged.columns:
-        merged[c] = np.nan if c.endswith("_horas") else ""
-
-merged_view = merged[final_cols].sort_values(by=["data", "cliente", "profissional_nome"])
-merged_view["foto_url"] = merged_view["foto_url"].fillna("")
-merged_view["status"] = merged_view["status"].fillna("")
-merged_view["observacoes"] = merged_view["observacoes"].fillna("")
-
-with st.expander("🔎 Filtros"):
-    cA, cB, cC = st.columns([1, 1, 2])
-    datas = sorted([d for d in merged_view["data"].dropna().unique() if pd.notna(d)])
-    data_sel = cA.selectbox("Filtrar por Data", options=["(todas)"] + datas, index=0)
-    txt_cliente = cB.text_input("Cliente contém", "")
-    txt_prof = cC.text_input("Profissional contém", "")
-    status_opts = sorted([s for s in merged_view["status"].dropna().unique() if str(s).strip() != ""])
-    status_sel = st.multiselect("Status do serviço", options=status_opts, default=status_opts)
-
-    mask = pd.Series(True, index=merged_view.index)
-    if data_sel != "(todas)":
-        mask &= (merged_view["data"] == data_sel)
-    if txt_cliente.strip():
-        mask &= merged_view["cliente"].str.contains(txt_cliente.strip(), case=False, na=False)
-    if txt_prof.strip():
-        mask &= merged_view["profissional_nome"].str.contains(txt_prof.strip(), case=False, na=False)
-    if status_sel:
-        mask &= merged_view["status"].isin(status_sel)
-
-    merged_view = merged_view[mask]
+        merged[c] = ""
+merged_view = merged[final_cols].sort_values(by=["data","cliente","profissional_nome"])
 
 # =========================
-# Tabela
-# =========================
-st.subheader("📄 Tabela de Atendimentos")
-st.dataframe(merged_view.drop(columns=["foto_url"]), use_container_width=True, hide_index=True)
-
-# =========================
-# Cartões (foto à direita)
+# Cartões com st.html
 # =========================
 st.subheader("🖼️ Cartões")
 if merged_view.empty:
     st.info("Nenhum atendimento para exibir.")
 else:
-    n_cols = st.slider("Colunas", 1, 4, 2, help="Quantidade de cartões por linha")
-    rows = [merged_view.iloc[i:i+n_cols] for i in range(0, len(merged_view), n_cols)]
-    for r in rows:
-        cols = st.columns(len(r))
-        for col, (_, row) in zip(cols, r.iterrows()):
-            with col:
-                cliente   = _s(row.get("cliente"))
-                servico   = _s(row.get("servico"))
-                data_br   = format_date_br(row.get("data"))
-                hora      = _s(row.get("hora_entrada"))
-                dur       = _s(row.get("duracao_horas"))
-                status    = _s(row.get("status"))
-                prof      = _s(row.get("profissional_nome"))
-                pid       = _s(row.get("profissional_id"))
-                endereco  = _s(row.get("endereco"))
-                obs       = _s(row.get("observacoes")).strip()
-
-                val = row.get("foto_url", None)
-                url = "" if (val is None or (isinstance(val, float) and pd.isna(val))) else str(val).strip()
-
-                obs_html = f"""
-                    <div style="margin-top:8px; padding:10px 12px; background:#f1f5f9; color:#0f172a;
-                                border-radius:10px; font-size:0.92rem;">
-                        <strong>Obs:</strong> {obs}
-                    </div>
-                """ if obs else ""
-
-                html = f"""
-                <div style="display:flex; gap:16px; align-items:flex-start;
-                            border:1px solid #e5e7eb; padding:12px 14px; border-radius:14px;
-                            background:#ffffff; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
-                  <div style="flex:1; min-width:0;">
-                    <div style="font-weight:700; font-size:1.05rem; margin-bottom:2px; color:#0f172a;">{cliente}</div>
-                    <div style="color:#64748b; margin-bottom:8px;">{servico}</div>
-
-                    <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:0.92rem; margin-bottom:8px; color:#334155;">
-                      <span>📅 {data_br}</span>
-                      <span>⏱️ {hora} • {dur}h</span>
-                      {f'<span>🔖 {status}</span>' if status else ''}
-                    </div>
-
-                    <div style="font-size:0.92rem; margin-bottom:6px; color:#334155;">
-                      👤 {prof} &nbsp;|&nbsp; ID: {pid}
-                    </div>
-
-                    <div style="font-size:0.92rem; color:#1f2937; line-height:1.35;">
-                      📍 {endereco}
-                    </div>
-
-                    {obs_html}
-                  </div>
-
-                  <div style="width:130px; text-align:center;">
-                    {(
-                      f'<img src="{url}" alt="foto" style="width:100%; height:auto; border-radius:12px; object-fit:cover;" />'
-                      if url else
-                      '<div style="background:#eaf2ff; color:#1e40af; padding:12px; border-radius:12px; font-size:0.9rem;">Sem foto</div>'
-                    )}
-                  </div>
-                </div>
-                """
-                st.markdown(html, unsafe_allow_html=True)
-
-# =========================
-# Exportar
-# =========================
-st.subheader("⬇️ Exportar")
-csv_bytes = merged_view.to_csv(index=False).encode("utf-8-sig")
-st.download_button("Baixar CSV", data=csv_bytes, file_name="atendimentos_fotos.csv", mime="text/csv")
-
-out = io.BytesIO()
-with pd.ExcelWriter(out, engine="xlsxwriter") as wr:
-    merged_view.to_excel(wr, index=False, sheet_name="Atendimentos")
-    ws = wr.sheets["Atendimentos"]
-    for i, col in enumerate(merged_view.columns):
-        try:
-            maxlen = int(min(60, max(10, merged_view[col].astype(str).str.len().max())))
-        except ValueError:
-            maxlen = 20
-        ws.set_column(i, i, maxlen + 2)
-
-st.download_button(
-    "Baixar Excel",
-    data=out.getvalue(),
-    file_name="atendimentos_fotos.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
-
-st.caption("Dica: ajuste a largura da foto mudando o 'width' do container da imagem (atualmente 130px).")
+    for _, row in merged_view.iterrows():
+        html = f"""
+        <div style="display:flex; gap:16px; align-items:flex-start;
+                    border:1px solid #e5e7eb; padding:12px 14px; border-radius:14px;
+                    background:#ffffff; box-shadow:0 1px 2px rgba(0,0,0,0.03); margin-bottom:14px;">
+          <div style="flex:1;">
+            <div style="font-weight:700; font-size:1.05rem; margin-bottom:2px; color:#0f172a;">{_s(row['cliente'])}</div>
+            <div style="color:#64748b; margin-bottom:8px;">{_s(row['servico'])}</div>
+            <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:0.92rem; margin-bottom:8px; color:#334155;">
+              <span>📅 {format_date_br(row['data'])}</span>
+              <span>⏱️ {_s(row['hora_entrada'])} • {_s(row['duracao_horas'])}h</span>
+              {f"<span>🔖 {_s(row['status'])}</span>" if _s(row['status']) else ""}
+            </div>
+            <div style="font-size:0.92rem; margin-bottom:6px; color:#334155;">
+              👤 {_s(row['profissional_nome'])} | ID: {_s(row['profissional_id'])}
+            </div>
+            <div style="font-size:0.92rem; color:#1f2937; line-height:1.35;">
+              📍 {_s(row['endereco'])}
+            </div>
+            {f"<div style='margin-top:8px; padding:10px 12px; background:#f1f5f9; border-radius:10px; font-size:0.9rem;'>Obs: {_s(row['observacoes'])}</div>" if _s(row['observacoes']) else ""}
+          </div>
+          <div style="width:130px; text-align:center;">
+            {f'<img src="{_s(row["foto_url"])}" style="width:100%; border-radius:12px;" />' if _s(row['foto_url']) else '<div style="background:#eaf2ff; color:#1e40af; padding:12px; border-radius:12px; font-size:0.9rem;">Sem foto</div>'}
+          </div>
+        </div>
+        """
+        st.html(html)
