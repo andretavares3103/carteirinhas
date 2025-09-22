@@ -242,10 +242,13 @@ else:
                 val = row.get("foto_url", None)
                 url = "" if (val is None or (isinstance(val,float) and pd.isna(val))) else str(val).strip()
                 if url:
-                    try: st.image(url, use_column_width=True, caption=_s(row.get('profissional_nome')))
-                    except Exception: st.warning("Não foi possível carregar a imagem desta URL.")
+                    try:
+                        st.image(url, use_container_width=True, caption=_s(row.get('profissional_nome')))
+                    except Exception:
+                        st.warning("Não foi possível carregar a imagem desta URL.")
                 else:
                     st.info("Sem foto cadastrada.")
+
 
 st.subheader("⬇️ Exportar")
 csv_bytes = merged_view.to_csv(index=False).encode("utf-8-sig")
@@ -265,3 +268,4 @@ st.download_button("Baixar Excel", data=out.getvalue(),
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.caption("Agora a coluna **Carteirinha** é reconhecida como fonte de foto. Cruzamento por ID é prioridade.")
+
