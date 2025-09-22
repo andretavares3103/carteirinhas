@@ -373,14 +373,14 @@ else:
                 """ if obs else ""
 
                 html = f"""
-                <div style="display:flex; gap:20px; align-items:flex-start;
+                <div style="display:flex; gap:16px; align-items:flex-start;
                             border:1px solid #e5e7eb; padding:12px 14px; border-radius:14px;
                             background:#ffffff; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
                   <div style="flex:1; min-width:0;">
                     <div style="font-weight:700; font-size:1.05rem; margin-bottom:2px; color:#0f172a;">{cliente}</div>
                     <div style="color:#64748b; margin-bottom:8px;">{servico}</div>
 
-                    <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:0.92rem; margin-bottom:8px; color:#334155;">
+                    <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:0.92rem; margin-bottom:8px; color:#334155;">
                       <span>📅 {data_br}</span>
                       <span>⏱️ {hora} • {dur}h</span>
                       {f'<span>🔖 {status}</span>' if status else ''}
@@ -434,5 +434,6 @@ st.download_button(
 )
 
 st.caption("Dica: ajuste a largura da foto mudando o 'width' do container da imagem (atualmente 130px).")
+
 
 
