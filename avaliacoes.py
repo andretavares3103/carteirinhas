@@ -424,7 +424,7 @@ else:
                     {obs_prestador_html}
                   </div>
 
-                  <div style="width:130px; text-align:center;">
+                  <div style="width:150px; text-align:center;">
                     {(
                       f'<img src="{url}" alt="foto" style="width:100%; height:auto; border-radius:12px; object-fit:cover;" />'
                       if url else
@@ -463,6 +463,7 @@ st.download_button(
 )
 
 st.caption("Dica: ajuste a largura da foto mudando o 'width' do container da imagem (atualmente 130px).")
+
 
 
 
