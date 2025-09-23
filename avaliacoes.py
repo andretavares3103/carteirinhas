@@ -241,7 +241,7 @@ st.title("📸 Vavivê — Atendimentos + Carteirinhas")
 st.caption("Atendimentos por upload; Carteirinhas lidas direto do disco (raiz/subpasta).")
 
 # 👉 Caminho fixo para Carteirinhas (no diretório do app)
-cart_default = "carteirinhas.xlsx"  # mude aqui se preferir outra pasta: "data/carteirinhas.xlsx"
+cart_default = "data/carteirinhas.xlsx"  # mude aqui se preferir outra pasta: "data/carteirinhas.xlsx"
 cart_path = st.text_input("Caminho do arquivo de Carteirinhas (no diretório da aplicação)", value=cart_default,
                           help="Ex.: 'carteirinhas.xlsx' ou 'data/carteirinhas.xlsx'")
 
@@ -466,3 +466,4 @@ st.download_button(
 )
 
 st.caption("Coloque o arquivo de Carteirinhas no diretório do app (ex.: 'carteirinhas.xlsx' ou 'data/carteirinhas.xlsx') e ajuste o caminho acima.")
+
