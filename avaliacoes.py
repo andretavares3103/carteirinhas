@@ -2,13 +2,12 @@
 # -------------------------------------------------------------
 # Vavivê — Visualizador de Atendimentos + Carteirinhas (Streamlit)
 # -------------------------------------------------------------
-# Upload de 2 arquivos Excel:
-#  - Atendimentos (prioriza aba "Clientes")
-#  - Carteirinhas (fotos/links)
+# Upload de 1 arquivo Excel (Atendimentos) + leitura direta de "Carteirinhas" a partir do disco
 # Cruzamento PRIORITÁRIO por ID/Matrícula (#Num Prestador ↔ Matricula)
 # Cartões com layout: texto à esquerda e foto à direita
 # -------------------------------------------------------------
 
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -134,7 +133,6 @@ ATEND_COLS = {
     "data": ["data", "data_1", "dt", "dt_atendimento", "data_atendimento"],
     "cliente": ["cliente", "nome_cliente", "cliente_nome"],
     "servico": ["servico", "tipo_servico", "descricao_servico"],
-    # endereço do atendimento
     "endereco": ["endereco", "endereço", "endereco_completo", "endereco_cliente", "logradouro", "rua", "address"],
     "hora_entrada": ["hora_entrada", "entrada", "hora_inicio", "inicio", "horario", "hora", "hora_de_entrada"],
     "duracao_horas": ["duracao", "duracao_horas", "horas", "carga_horaria", "tempo", "horas_de_servico"],
@@ -148,6 +146,7 @@ ATEND_COLS = {
         "comentario_prestador","comentarios_prestador"
     ],
 }
+
 CART_COLS = {
     "profissional_id": ["matricula", "num_prestador", "id_profissional", "numero_do_profissional", "num_profissional", "num"],
     "profissional_nome": ["profissional", "nome", "nome_profissional", "prof_nome", "prestador"],
@@ -203,6 +202,9 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
     out["profissional_id"] = _ensure_series(df, cols["profissional_id"]).astype(str) if cols["profissional_id"] else ""
     out["status"] = _ensure_series(df, cols["status"]).astype(str) if cols["status"] else ""
     out["observacoes"] = _ensure_series(df, cols["observacoes"]).astype(str) if cols.get("observacoes") else ""
+    out["observacoes_prestador"] = (
+        _ensure_series(df, cols["observacoes_prestador"]).astype(str) if cols.get("observacoes_prestador") else ""
+    )
 
     out["__nome_norm"] = (
         out["profissional_nome"].fillna("").str.strip().str.lower()
@@ -210,14 +212,7 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
     )
     out["duracao_horas"] = out["duracao_horas"].round(2)
 
-    out["observacoes_prestador"] = (
-        _ensure_series(df, cols["observacoes_prestador"]).astype(str)
-        if cols.get("observacoes_prestador") else ""
-    )
-
-    
     return out
-
 
 def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = normalize_columns(df_raw)
@@ -243,40 +238,55 @@ def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
 # =========================
 
 st.title("📸 Vavivê — Atendimentos + Carteirinhas")
-st.caption("Cruzamento PRIORITÁRIO por ID (#Num Prestador ↔ Matricula). Se faltar ID, tenta por nome.")
+st.caption("Atendimentos por upload; Carteirinhas lidas direto do disco (raiz/subpasta).")
 
-c1, c2 = st.columns(2)
-with c1:
-    f_atend = st.file_uploader("Arquivo de Atendimentos (Excel)", type=["xlsx", "xls"], key="up_atend")
-with c2:
-    f_cart = st.file_uploader("Arquivo de Carteirinhas (Excel) — fotos/links", type=["xlsx", "xls"], key="up_cart")
+# 👉 Caminho fixo para Carteirinhas (no diretório do app)
+cart_default = "carteirinhas.xlsx"  # mude aqui se preferir outra pasta: "data/carteirinhas.xlsx"
+cart_path = st.text_input("Caminho do arquivo de Carteirinhas (no diretório da aplicação)", value=cart_default,
+                          help="Ex.: 'carteirinhas.xlsx' ou 'data/carteirinhas.xlsx'")
 
-if not f_atend or not f_cart:
-    st.info("⬆️ Carregue os dois arquivos para continuar.")
+if not os.path.exists(cart_path):
+    st.error(f"Arquivo de Carteirinhas não encontrado em: {cart_path}\n"
+             "Coloque o arquivo no diretório do app ou ajuste o caminho acima.")
     st.stop()
 
-def pick_sheet(excel_file, prefer="Clientes"):
-    xls = pd.ExcelFile(excel_file)
-    if prefer in xls.sheet_names:
+# Upload apenas de Atendimentos
+f_atend = st.file_uploader("Arquivo de Atendimentos (Excel)", type=["xlsx", "xls"], key="up_atend")
+if not f_atend:
+    st.info("⬆️ Envie o arquivo de Atendimentos para continuar.")
+    st.stop()
+
+def pick_sheet(xls: pd.ExcelFile, prefer: str | None = None):
+    if prefer and prefer in xls.sheet_names:
         return prefer
     for s in xls.sheet_names:
         tmp = pd.read_excel(xls, sheet_name=s, nrows=5)
         if not tmp.empty and tmp.dropna(how="all", axis=1).shape[1] > 0:
             return s
-    return xls.sheet_names[0]
+    return xls.sheet_names[0]  # fallback
 
+# Lê Atendimentos (preferindo "Clientes")
 try:
-    sa = pick_sheet(f_atend, "Clientes")
-    df_atend_raw = pd.read_excel(pd.ExcelFile(f_atend), sheet_name=sa)
+    xls_a = pd.ExcelFile(f_atend)
+    sheet_a_default = "Clientes" if "Clientes" in xls_a.sheet_names else pick_sheet(xls_a)
+    st.caption(":file_folder: Aba detectada no arquivo de Atendimentos")
+    sheet_a = st.selectbox("Aba dos Atendimentos", options=xls_a.sheet_names,
+                           index=xls_a.sheet_names.index(sheet_a_default))
+    df_atend_raw = pd.read_excel(xls_a, sheet_name=sheet_a)
 except Exception as e:
     st.error(f"Erro ao ler Atendimentos: {e}")
     st.stop()
 
+# Lê Carteirinhas do disco
 try:
-    sc = pick_sheet(f_cart)
-    df_cart_raw = pd.read_excel(pd.ExcelFile(f_cart), sheet_name=sc)
+    xls_c = pd.ExcelFile(cart_path)
+    sheet_c_default = pick_sheet(xls_c)  # primeira com dados
+    st.caption(f":file_folder: Carteirinhas carregadas de **{cart_path}**")
+    sheet_c = st.selectbox("Aba das Carteirinhas (arquivo local)", options=xls_c.sheet_names,
+                           index=xls_c.sheet_names.index(sheet_c_default))
+    df_cart_raw = pd.read_excel(xls_c, sheet_name=sheet_c)
 except Exception as e:
-    st.error(f"Erro ao ler Carteirinhas: {e}")
+    st.error(f"Erro ao ler Carteirinhas ({cart_path}): {e}")
     st.stop()
 
 # =========================
@@ -314,7 +324,6 @@ final_cols = [
     "profissional_nome","profissional_id","status",
     "observacoes","observacoes_prestador","foto_url"
 ]
-
 for c in final_cols:
     if c not in merged.columns:
         merged[c] = np.nan if c.endswith("_horas") else ""
@@ -323,6 +332,7 @@ merged_view = merged[final_cols].sort_values(by=["data", "cliente", "profissiona
 merged_view["foto_url"] = merged_view["foto_url"].fillna("")
 merged_view["status"] = merged_view["status"].fillna("")
 merged_view["observacoes"] = merged_view["observacoes"].fillna("")
+merged_view["observacoes_prestador"] = merged_view["observacoes_prestador"].fillna("")
 
 with st.expander("🔎 Filtros"):
     cA, cB, cC = st.columns([1, 1, 2])
@@ -358,9 +368,7 @@ st.subheader("🖼️ Cartões")
 if merged_view.empty:
     st.info("Nenhum atendimento para exibir.")
 else:
-    # ajuste a quantidade de cartões por linha se quiser (apenas visual)
     n_cols = st.slider("Colunas", 1, 4, 2, help="Quantidade de cartões por linha")
-
     rows = [merged_view.iloc[i:i+n_cols] for i in range(0, len(merged_view), n_cols)]
     for r in rows:
         cols = st.columns(len(r))
@@ -375,9 +383,7 @@ else:
                 prof      = _s(row.get("profissional_nome"))
                 pid       = _s(row.get("profissional_id"))
                 endereco  = _s(row.get("endereco"))
-
-                # --- NOVO: Observações ---
-                obs = _s(row.get("observacoes")).strip()
+                obs       = _s(row.get("observacoes")).strip()
                 obs_prestador = _s(row.get("observacoes_prestador")).strip()
 
                 obs_html = f"""
@@ -394,7 +400,6 @@ else:
                     </div>
                 """ if obs_prestador else ""
 
-                # imagem
                 val = row.get("foto_url", None)
                 url = "" if (val is None or (isinstance(val, float) and pd.isna(val))) else str(val).strip()
 
@@ -424,7 +429,7 @@ else:
                     {obs_prestador_html}
                   </div>
 
-                  <div style="width:150px; text-align:center;">
+                  <div style="width:130px; text-align:center;">
                     {(
                       f'<img src="{url}" alt="foto" style="width:100%; height:auto; border-radius:12px; object-fit:cover;" />'
                       if url else
@@ -433,9 +438,7 @@ else:
                   </div>
                 </div>
                 """
-
-                # Renderiza SEM escapar (não vira código)
-                components.html(html, height=260, scrolling=False)  # ajuste a altura se o conteúdo ficar maior
+                components.html(html, height=260, scrolling=False)
 
 # =========================
 # Exportar
@@ -462,8 +465,4 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
-st.caption("Dica: ajuste a largura da foto mudando o 'width' do container da imagem (atualmente 130px).")
-
-
-
-
+st.caption("Coloque o arquivo de Carteirinhas no diretório do app (ex.: 'carteirinhas.xlsx' ou 'data/carteirinhas.xlsx') e ajuste o caminho acima.")
