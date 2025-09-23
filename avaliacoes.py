@@ -1,4 +1,3 @@
-Salve este codigo
 
 
 # -*- coding: utf-8 -*-
@@ -466,5 +465,6 @@ st.download_button(
 )
 
 st.caption("Dica: ajuste a largura da foto mudando o 'width' do container da imagem (atualmente 130px).")
+
 
 
