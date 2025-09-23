@@ -1,25 +1,33 @@
-
-
 # -*- coding: utf-8 -*-
 # -------------------------------------------------------------
 # Vavivê — Visualizador de Atendimentos + Carteirinhas (Streamlit)
 # -------------------------------------------------------------
-# Upload de 2 arquivos Excel:
-#  - Atendimentos (prioriza aba "Clientes")
-#  - Carteirinhas (fotos/links)
-# Cruzamento PRIORITÁRIO por ID/Matrícula (#Num Prestador ↔ Matricula)
-# Cartões com layout: texto à esquerda e foto à direita
+# Upload SOMENTE do Excel de Atendimentos.
+# Carteirinhas lidas automaticamente do GitHub (raiz do repo).
+# Cruzamento PRIORITÁRIO por ID/Matrícula (#Num Prestador ↔ Matricula).
+# Cartões com layout: texto à esquerda e foto à direita.
 # -------------------------------------------------------------
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
+import base64
 import io
 import re
+from typing import Optional
+from datetime import datetime, timedelta
+
+import requests
+import numpy as np
+import pandas as pd
+import streamlit as st
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Vavivê — Atendimentos + Carteirinhas", layout="wide")
+
+# =========================
+# Config GitHub (fixo)
+# =========================
+GH_REPO   = "andretavares3103/carteirinhas"   # owner/repo
+GH_BRANCH = "main"                             # branch
+GH_FILE   = "carteirinhas.xlsx"                # arquivo na raiz
 
 # =========================
 # Utilitários
@@ -51,7 +59,7 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.rename(columns={c: slugify_col(c) for c in df.columns}, inplace=True)
     return df
 
-def parse_datetime_col(serie):
+def parse_datetime_col(serie: pd.Series) -> pd.Series:
     def parse_one(x):
         if pd.isna(x):
             return pd.NaT
@@ -78,11 +86,11 @@ def parse_datetime_col(serie):
             return pd.NaT
     return serie.apply(parse_one)
 
-def parse_time_hhmm(serie):
+def parse_time_hhmm(serie: pd.Series):
     dt = parse_datetime_col(serie)
     return dt.dt.strftime("%H:%M"), dt
 
-def ensure_numeric_hours(serie):
+def ensure_numeric_hours(serie: pd.Series) -> pd.Series:
     def to_hours(x):
         if pd.isna(x):
             return np.nan
@@ -129,6 +137,54 @@ def format_date_br(d):
         return str(d)
 
 # =========================
+# GitHub helpers (carteirinhas)
+# =========================
+
+def _fetch_github_raw(owner_repo: str, path: str, branch: str = "main", token: Optional[str] = None) -> bytes:
+    """
+    Baixa arquivo do GitHub. Tenta via raw (público) e, se houver token, via API (privado).
+    """
+    owner_repo = owner_repo.strip().strip("/")
+    path = path.strip().lstrip("/")
+
+    # 1) Raw URL (public)
+    raw_url = f"https://raw.githubusercontent.com/{owner_repo}/{branch}/{path}"
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    resp = requests.get(raw_url, headers=headers, timeout=20)
+    if resp.status_code == 200 and resp.content:
+        return resp.content
+
+    # 2) API (privado)
+    if token:
+        api_url = f"https://api.github.com/repos/{owner_repo}/contents/{path}?ref={branch}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        r = requests.get(api_url, headers=headers, timeout=20)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, dict) and "content" in data and data.get("encoding") == "base64":
+                return base64.b64decode(data["content"])
+        raise RuntimeError(f"GitHub API falhou ({r.status_code}): {r.text[:200]}")
+    else:
+        raise RuntimeError(
+            f"Não foi possível baixar o arquivo via raw URL: {raw_url} (HTTP {resp.status_code}). "
+            "Se o repositório for privado, configure GITHUB_TOKEN em st.secrets."
+        )
+
+def read_excel_first_nonempty_sheet(xls_bytes: bytes) -> pd.DataFrame:
+    xls = pd.ExcelFile(io.BytesIO(xls_bytes))
+    # primeira aba não-vazia
+    for s in xls.sheet_names:
+        tmp = pd.read_excel(xls, sheet_name=s, nrows=5)
+        if not tmp.empty and tmp.dropna(how="all", axis=1).shape[1] > 0:
+            return pd.read_excel(xls, sheet_name=s)
+    return pd.read_excel(xls, sheet_name=0)
+
+# =========================
 # Mapeamentos de colunas
 # =========================
 
@@ -136,7 +192,6 @@ ATEND_COLS = {
     "data": ["data", "data_1", "dt", "dt_atendimento", "data_atendimento"],
     "cliente": ["cliente", "nome_cliente", "cliente_nome"],
     "servico": ["servico", "tipo_servico", "descricao_servico"],
-    # endereço do atendimento
     "endereco": ["endereco", "endereço", "endereco_completo", "endereco_cliente", "logradouro", "rua", "address"],
     "hora_entrada": ["hora_entrada", "entrada", "hora_inicio", "inicio", "horario", "hora", "hora_de_entrada"],
     "duracao_horas": ["duracao", "duracao_horas", "horas", "carga_horaria", "tempo", "horas_de_servico"],
@@ -150,14 +205,14 @@ ATEND_COLS = {
         "comentario_prestador","comentarios_prestador"
     ],
 }
+
 CART_COLS = {
     "profissional_id": ["matricula", "num_prestador", "id_profissional", "numero_do_profissional", "num_profissional", "num"],
     "profissional_nome": ["profissional", "nome", "nome_profissional", "prof_nome", "prestador"],
-    # aceita "Carteirinha"
     "foto_url": ["carteirinha", "carteirinhas", "foto_url", "url", "link", "image", "foto", "photo", "photo_url"],
 }
 
-def pick_col(df, candidates):
+def pick_col(df: pd.DataFrame, candidates) -> Optional[str]:
     for c in candidates:
         if c in df.columns:
             return c
@@ -205,21 +260,17 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
     out["profissional_id"] = _ensure_series(df, cols["profissional_id"]).astype(str) if cols["profissional_id"] else ""
     out["status"] = _ensure_series(df, cols["status"]).astype(str) if cols["status"] else ""
     out["observacoes"] = _ensure_series(df, cols["observacoes"]).astype(str) if cols.get("observacoes") else ""
+    out["observacoes_prestador"] = (
+        _ensure_series(df, cols["observacoes_prestador"]).astype(str)
+        if cols.get("observacoes_prestador") else ""
+    )
 
     out["__nome_norm"] = (
         out["profissional_nome"].fillna("").str.strip().str.lower()
         .str.normalize("NFKD").str.encode("ascii", "ignore").str.decode("utf-8")
     )
     out["duracao_horas"] = out["duracao_horas"].round(2)
-
-    out["observacoes_prestador"] = (
-        _ensure_series(df, cols["observacoes_prestador"]).astype(str)
-        if cols.get("observacoes_prestador") else ""
-    )
-
-    
     return out
-
 
 def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = normalize_columns(df_raw)
@@ -241,22 +292,23 @@ def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # =========================
-# UI e Leitura de arquivos
+# UI: Upload Atendimentos (GitHub fixo para Carteirinhas)
 # =========================
 
-st.title("📸 Vavivê — Atendimentos + Carteirinhas")
-st.caption("Cruzamento PRIORITÁRIO por ID (#Num Prestador ↔ Matricula). Se faltar ID, tenta por nome.")
+st.title("📸 Vavivê — Atendimentos + Carteirinhas (GitHub)")
+st.caption(f"Carteirinhas lidas automaticamente de `{GH_REPO}` @ `{GH_BRANCH}` → `{GH_FILE}`")
 
-c1, c2 = st.columns(2)
-with c1:
-    f_atend = st.file_uploader("Arquivo de Atendimentos (Excel)", type=["xlsx", "xls"], key="up_atend")
-with c2:
-    f_cart = st.file_uploader("Arquivo de Carteirinhas (Excel) — fotos/links", type=["xlsx", "xls"], key="up_cart")
-
-if not f_atend or not f_cart:
-    st.info("⬆️ Carregue os dois arquivos para continuar.")
+# Atendimentos (upload)
+f_atend = st.file_uploader("Arquivo de Atendimentos (Excel)", type=["xlsx", "xls"], key="up_atend")
+if not f_atend:
+    st.info("⬆️ Envie o arquivo de **Atendimentos** para continuar.")
     st.stop()
 
+# =========================
+# Leitura dos arquivos
+# =========================
+
+# Atendimentos (prioriza aba 'Clientes' se existir, senão a primeira com dados)
 def pick_sheet(excel_file, prefer="Clientes"):
     xls = pd.ExcelFile(excel_file)
     if prefer in xls.sheet_names:
@@ -274,11 +326,19 @@ except Exception as e:
     st.error(f"Erro ao ler Atendimentos: {e}")
     st.stop()
 
+# Carteirinhas (GitHub)
 try:
-    sc = pick_sheet(f_cart)
-    df_cart_raw = pd.read_excel(pd.ExcelFile(f_cart), sheet_name=sc)
+    gh_token = None
+    try:
+        gh_token = st.secrets.get("GITHUB_TOKEN", None)  # opcional (só p/ repo privado)
+    except Exception:
+        gh_token = None
+
+    xls_bytes = _fetch_github_raw(GH_REPO, GH_FILE, branch=GH_BRANCH, token=gh_token)
+    df_cart_raw = read_excel_first_nonempty_sheet(xls_bytes)
+    st.success(f"Carteirinhas carregadas do GitHub: {GH_REPO}/{GH_FILE} @ {GH_BRANCH}")
 except Exception as e:
-    st.error(f"Erro ao ler Carteirinhas: {e}")
+    st.error(f"Erro ao baixar/ler Carteirinhas do GitHub: {e}")
     st.stop()
 
 # =========================
@@ -316,7 +376,6 @@ final_cols = [
     "profissional_nome","profissional_id","status",
     "observacoes","observacoes_prestador","foto_url"
 ]
-
 for c in final_cols:
     if c not in merged.columns:
         merged[c] = np.nan if c.endswith("_horas") else ""
@@ -325,6 +384,7 @@ merged_view = merged[final_cols].sort_values(by=["data", "cliente", "profissiona
 merged_view["foto_url"] = merged_view["foto_url"].fillna("")
 merged_view["status"] = merged_view["status"].fillna("")
 merged_view["observacoes"] = merged_view["observacoes"].fillna("")
+merged_view["observacoes_prestador"] = merged_view["observacoes_prestador"].fillna("")
 
 with st.expander("🔎 Filtros"):
     cA, cB, cC = st.columns([1, 1, 2])
@@ -360,9 +420,7 @@ st.subheader("🖼️ Cartões")
 if merged_view.empty:
     st.info("Nenhum atendimento para exibir.")
 else:
-    # ajuste a quantidade de cartões por linha se quiser (apenas visual)
     n_cols = st.slider("Colunas", 1, 4, 2, help="Quantidade de cartões por linha")
-
     rows = [merged_view.iloc[i:i+n_cols] for i in range(0, len(merged_view), n_cols)]
     for r in rows:
         cols = st.columns(len(r))
@@ -377,9 +435,7 @@ else:
                 prof      = _s(row.get("profissional_nome"))
                 pid       = _s(row.get("profissional_id"))
                 endereco  = _s(row.get("endereco"))
-
-                # --- NOVO: Observações ---
-                obs = _s(row.get("observacoes")).strip()
+                obs       = _s(row.get("observacoes")).strip()
                 obs_prestador = _s(row.get("observacoes_prestador")).strip()
 
                 obs_html = f"""
@@ -436,8 +492,7 @@ else:
                 </div>
                 """
 
-                # Renderiza SEM escapar (não vira código)
-                components.html(html, height=260, scrolling=False)  # ajuste a altura se o conteúdo ficar maior
+                components.html(html, height=260, scrolling=False)
 
 # =========================
 # Exportar
@@ -464,6 +519,4 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
-st.caption("Dica: ajuste a largura da foto mudando o 'width' do container da imagem (atualmente 130px).")
-
-
+st.caption("Carteirinhas lidas do GitHub público. Para repo privado, defina GITHUB_TOKEN em st.secrets.")
