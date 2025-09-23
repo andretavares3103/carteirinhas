@@ -1,22 +1,22 @@
+
+
 # -*- coding: utf-8 -*-
 # -------------------------------------------------------------
 # Vavivê — Visualizador de Atendimentos + Carteirinhas (Streamlit)
 # -------------------------------------------------------------
-# Upload SOMENTE de Atendimentos.
-# Carteirinhas lidas direto do GitHub (raiz do repositório).
+# Upload de 2 arquivos Excel:
+#  - Atendimentos (prioriza aba "Clientes")
+#  - Carteirinhas (fotos/links)
 # Cruzamento PRIORITÁRIO por ID/Matrícula (#Num Prestador ↔ Matricula)
 # Cartões com layout: texto à esquerda e foto à direita
 # -------------------------------------------------------------
 
-import base64
+import streamlit as st
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
 import io
 import re
-import requests
-from datetime import datetime, timedelta
-
-import numpy as np
-import pandas as pd
-import streamlit as st
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Vavivê — Atendimentos + Carteirinhas", layout="wide")
@@ -129,54 +129,6 @@ def format_date_br(d):
         return str(d)
 
 # =========================
-# GitHub helpers (carteirinhas)
-# =========================
-
-def _fetch_github_raw(owner_repo: str, path: str, branch: str = "main", token: str | None = None) -> bytes:
-    """
-    Tenta baixar o arquivo via URL raw (p/ repositórios públicos).
-    Se 'token' for passado e o repo for privado, usamos a API como fallback.
-    """
-    owner_repo = owner_repo.strip().strip("/")
-    path = path.strip().lstrip("/")
-    # 1) Tentativa via raw
-    raw_url = f"https://raw.githubusercontent.com/{owner_repo}/{branch}/{path}"
-    headers = {}
-    if token:
-        # Alguns ambientes aceitam auth também no raw; se não, API abaixo resolvida.
-        headers["Authorization"] = f"Bearer {token}"
-    resp = requests.get(raw_url, headers=headers, timeout=20)
-    if resp.status_code == 200 and resp.content:
-        return resp.content
-
-    # 2) Fallback via API (recomendado p/ privados)
-    if token:
-        api_url = f"https://api.github.com/repos/{owner_repo}/contents/{path}?ref={branch}"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-        }
-        r = requests.get(api_url, headers=headers, timeout=20)
-        if r.status_code == 200:
-            data = r.json()
-            if isinstance(data, dict) and "content" in data and data.get("encoding") == "base64":
-                return base64.b64decode(data["content"])
-        raise RuntimeError(f"GitHub API falhou ({r.status_code}): {r.text[:200]}")
-    else:
-        raise RuntimeError(f"Não foi possível baixar o arquivo via raw URL: {raw_url} (HTTP {resp.status_code}). "
-                           "Se o repositório for privado, configure GITHUB_TOKEN em st.secrets.")
-
-def read_excel_first_nonempty_sheet(xls_bytes: bytes) -> pd.DataFrame:
-    xls = pd.ExcelFile(io.BytesIO(xls_bytes))
-    # primeira aba com dados não-vazia
-    for s in xls.sheet_names:
-        tmp = pd.read_excel(xls, sheet_name=s, nrows=5)
-        if not tmp.empty and tmp.dropna(how="all", axis=1).shape[1] > 0:
-            return pd.read_excel(xls, sheet_name=s)
-    # fallback: primeira aba
-    return pd.read_excel(xls, sheet_name=0)
-
-# =========================
 # Mapeamentos de colunas
 # =========================
 
@@ -184,6 +136,7 @@ ATEND_COLS = {
     "data": ["data", "data_1", "dt", "dt_atendimento", "data_atendimento"],
     "cliente": ["cliente", "nome_cliente", "cliente_nome"],
     "servico": ["servico", "tipo_servico", "descricao_servico"],
+    # endereço do atendimento
     "endereco": ["endereco", "endereço", "endereco_completo", "endereco_cliente", "logradouro", "rua", "address"],
     "hora_entrada": ["hora_entrada", "entrada", "hora_inicio", "inicio", "horario", "hora", "hora_de_entrada"],
     "duracao_horas": ["duracao", "duracao_horas", "horas", "carga_horaria", "tempo", "horas_de_servico"],
@@ -197,10 +150,10 @@ ATEND_COLS = {
         "comentario_prestador","comentarios_prestador"
     ],
 }
-
 CART_COLS = {
     "profissional_id": ["matricula", "num_prestador", "id_profissional", "numero_do_profissional", "num_profissional", "num"],
     "profissional_nome": ["profissional", "nome", "nome_profissional", "prof_nome", "prestador"],
+    # aceita "Carteirinha"
     "foto_url": ["carteirinha", "carteirinhas", "foto_url", "url", "link", "image", "foto", "photo", "photo_url"],
 }
 
@@ -252,17 +205,21 @@ def coerce_atendimentos(df_raw: pd.DataFrame) -> pd.DataFrame:
     out["profissional_id"] = _ensure_series(df, cols["profissional_id"]).astype(str) if cols["profissional_id"] else ""
     out["status"] = _ensure_series(df, cols["status"]).astype(str) if cols["status"] else ""
     out["observacoes"] = _ensure_series(df, cols["observacoes"]).astype(str) if cols.get("observacoes") else ""
-    out["observacoes_prestador"] = (
-        _ensure_series(df, cols["observacoes_prestador"]).astype(str)
-        if cols.get("observacoes_prestador") else ""
-    )
 
     out["__nome_norm"] = (
         out["profissional_nome"].fillna("").str.strip().str.lower()
         .str.normalize("NFKD").str.encode("ascii", "ignore").str.decode("utf-8")
     )
     out["duracao_horas"] = out["duracao_horas"].round(2)
+
+    out["observacoes_prestador"] = (
+        _ensure_series(df, cols["observacoes_prestador"]).astype(str)
+        if cols.get("observacoes_prestador") else ""
+    )
+
+    
     return out
+
 
 def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = normalize_columns(df_raw)
@@ -284,60 +241,44 @@ def coerce_carteirinhas(df_raw: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # =========================
-# UI: Upload Atendimentos + Fonte GitHub para Carteirinhas
+# UI e Leitura de arquivos
 # =========================
 
-st.title("📸 Vavivê — Atendimentos + Carteirinhas (GitHub)")
+st.title("📸 Vavivê — Atendimentos + Carteirinhas")
+st.caption("Cruzamento PRIORITÁRIO por ID (#Num Prestador ↔ Matricula). Se faltar ID, tenta por nome.")
 
-col_up, col_cfg = st.columns([1,1])
-
-with col_up:
+c1, c2 = st.columns(2)
+with c1:
     f_atend = st.file_uploader("Arquivo de Atendimentos (Excel)", type=["xlsx", "xls"], key="up_atend")
+with c2:
+    f_cart = st.file_uploader("Arquivo de Carteirinhas (Excel) — fotos/links", type=["xlsx", "xls"], key="up_cart")
 
-with col_cfg:
-    st.markdown("**Carteirinhas via GitHub (raiz do repo)**")
-    gh_repo = st.text_input("Repositório (owner/repo)", value=st.session_state.get("gh_repo", ""))
-    gh_branch = st.text_input("Branch", value=st.session_state.get("gh_branch", "main"))
-    gh_file = st.text_input("Arquivo na raiz (ex.: carteirinhas.xlsx)", value=st.session_state.get("gh_file", "carteirinhas.xlsx"))
-    st.caption("Se o repo for **privado**, defina `GITHUB_TOKEN` em `st.secrets`.")
-
-if not f_atend:
-    st.info("⬆️ Envie o arquivo de **Atendimentos** para continuar.")
+if not f_atend or not f_cart:
+    st.info("⬆️ Carregue os dois arquivos para continuar.")
     st.stop()
 
-if not gh_repo or not gh_file:
-    st.warning("Informe **owner/repo** e o **nome do arquivo** das Carteirinhas para carregar do GitHub.")
-    st.stop()
+def pick_sheet(excel_file, prefer="Clientes"):
+    xls = pd.ExcelFile(excel_file)
+    if prefer in xls.sheet_names:
+        return prefer
+    for s in xls.sheet_names:
+        tmp = pd.read_excel(xls, sheet_name=s, nrows=5)
+        if not tmp.empty and tmp.dropna(how="all", axis=1).shape[1] > 0:
+            return s
+    return xls.sheet_names[0]
 
-# Persistência simples na sessão
-st.session_state["gh_repo"] = gh_repo
-st.session_state["gh_branch"] = gh_branch
-st.session_state["gh_file"] = gh_file
-
-# =========================
-# Leitura dos arquivos
-# =========================
-
-# Atendimentos (upload)
 try:
-    df_atend_raw = pd.read_excel(pd.ExcelFile(f_atend), sheet_name=0)
+    sa = pick_sheet(f_atend, "Clientes")
+    df_atend_raw = pd.read_excel(pd.ExcelFile(f_atend), sheet_name=sa)
 except Exception as e:
     st.error(f"Erro ao ler Atendimentos: {e}")
     st.stop()
 
-# Carteirinhas (GitHub)
 try:
-    gh_token = None
-    try:
-        gh_token = st.secrets.get("GITHUB_TOKEN", None)
-    except Exception:
-        gh_token = None
-
-    xls_bytes = _fetch_github_raw(gh_repo, gh_file, branch=gh_branch, token=gh_token)
-    df_cart_raw = read_excel_first_nonempty_sheet(xls_bytes)
-    st.success(f"Carteirinhas carregadas do GitHub: {gh_repo}/{gh_file} @ {gh_branch}")
+    sc = pick_sheet(f_cart)
+    df_cart_raw = pd.read_excel(pd.ExcelFile(f_cart), sheet_name=sc)
 except Exception as e:
-    st.error(f"Erro ao baixar/ler Carteirinhas do GitHub: {e}")
+    st.error(f"Erro ao ler Carteirinhas: {e}")
     st.stop()
 
 # =========================
@@ -384,7 +325,6 @@ merged_view = merged[final_cols].sort_values(by=["data", "cliente", "profissiona
 merged_view["foto_url"] = merged_view["foto_url"].fillna("")
 merged_view["status"] = merged_view["status"].fillna("")
 merged_view["observacoes"] = merged_view["observacoes"].fillna("")
-merged_view["observacoes_prestador"] = merged_view["observacoes_prestador"].fillna("")
 
 with st.expander("🔎 Filtros"):
     cA, cB, cC = st.columns([1, 1, 2])
@@ -420,7 +360,9 @@ st.subheader("🖼️ Cartões")
 if merged_view.empty:
     st.info("Nenhum atendimento para exibir.")
 else:
+    # ajuste a quantidade de cartões por linha se quiser (apenas visual)
     n_cols = st.slider("Colunas", 1, 4, 2, help="Quantidade de cartões por linha")
+
     rows = [merged_view.iloc[i:i+n_cols] for i in range(0, len(merged_view), n_cols)]
     for r in rows:
         cols = st.columns(len(r))
@@ -435,7 +377,9 @@ else:
                 prof      = _s(row.get("profissional_nome"))
                 pid       = _s(row.get("profissional_id"))
                 endereco  = _s(row.get("endereco"))
-                obs       = _s(row.get("observacoes")).strip()
+
+                # --- NOVO: Observações ---
+                obs = _s(row.get("observacoes")).strip()
                 obs_prestador = _s(row.get("observacoes_prestador")).strip()
 
                 obs_html = f"""
@@ -492,7 +436,8 @@ else:
                 </div>
                 """
 
-                components.html(html, height=260, scrolling=False)
+                # Renderiza SEM escapar (não vira código)
+                components.html(html, height=260, scrolling=False)  # ajuste a altura se o conteúdo ficar maior
 
 # =========================
 # Exportar
@@ -519,4 +464,6 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
-st.caption("Carteirinhas lidas do GitHub. Para repo privado, defina GITHUB_TOKEN em st.secrets.")
+st.caption("Dica: ajuste a largura da foto mudando o 'width' do container da imagem (atualmente 130px).")
+
+
